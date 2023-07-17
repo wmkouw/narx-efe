@@ -13,18 +13,18 @@ jupyter:
     name: julia-1.8
 ---
 
-# Bayesian Black-box model-predictive control
+# Bayesian black-box model-predictive control
 
-In this notebook, I test the NARX-EFE agent on a single pendulum setting.
+An Expected Free Energy minimizing agent based on a nonlinear autoregressive model with exogenous input applied to a driven damped pendulum.
 
 
-## System: single pendulum
+## System: driven damped pendulum
 
-Consider a single pendulum with angle $\theta$ evolving according to:
+Consider a single pendulum with angle $\theta(t)$ and input $u(t)$ evolving according to:
 
-$$ \ddot{\theta} = - \frac{\mathcal{g}}{l} sin(\theta) \, .$$
+$$ \ddot{\theta} + \frac{\mathcal{g}}{l} \sin(\theta) + \frac{\gamma}{l} \dot{\theta} = \frac{1}{ml} u\, .$$
 
-where $l$ is length and $\mathcal{g}$ is Earth's gravity.
+where $m$ is mass, $l$ is length, $\gamma$ is damping and $\mathcal{g}$ is Earth's gravity.
 
 ```julia
 using Revise
@@ -34,80 +34,25 @@ using LinearAlgebra
 using ProgressMeter
 using Distributions
 using Plots; default(grid=false, label="", linewidth=3,margin=10Plots.pt)
-include("../util.jl")
+include("../util.jl");
+include("Pendulum.jl");
 ```
 
 ```julia
-mutable struct Pendulum
-
-    state       ::Vector{Float64}
-    sensor      ::Float64
-    
-    mass        ::Float64
-    length      ::Float64
-    mnoise_sd   ::Float64 # measurement noise standard deviation
-
-    function Pendulum(init_state, mass, length, mnoise_sd)
-        
-        init_sensor = init_state[1] + mnoise_sd*randn()
-        
-        return new(init_state, init_sensor, mass, length, mnoise_sd)
-    end
-end
+# System parameters
+sys_mass = 2.0
+sys_length = 0.5
+sys_damping = 0.1
+sys_mnoise_sd = 1e-2
 ```
 
 ```julia
-function params(sys::Pendulum)
-    return (sys.mass, sys.length)
-end
-```
-
-```julia
-function dzdt(state::Vector, u::Float64, params::Tuple)
-    
-    mass, length = params
-    
-    return [state[2]; -9.81/length * sin(state[1]) + 1/mass * u]    
-end
-```
-
-```julia
-function RK4(sys::Pendulum, u::Float64; Δt::Float64=1.0)
-    
-    K1 = dzdt(sys.state          , u, params(sys))
-    K2 = dzdt(sys.state + K1*Δt/2, u, params(sys))
-    K3 = dzdt(sys.state + K2*Δt/2, u, params(sys))
-    K4 = dzdt(sys.state + K3*Δt  , u, params(sys))
-    
-    return Δt/6 * (K1 + 2K2 + 2K3 + K4)
-end
-```
-
-```julia
-function update!(sys::Pendulum, u::Float64; Δt::Float64 = 1.0)
-    
-    sys.state  = sys.state + RK4(sys, u, Δt=Δt)
-    
-    sys.sensor = sys.state[1] + sys.mnoise_sd * randn()
-    
-end
-```
-
-```julia
-# Define system
-pendulum_mass = 2.0
-pendulum_length = 0.8
-mnoise_sd = 1e-2
-
-init_state = [π/2, 0.0]
-
-pendulum = Pendulum(init_state, pendulum_mass, pendulum_length, mnoise_sd)
-```
-
-```julia
-T = 100
+T = 300
 Δt = 0.05
 time = range(0.0, step=Δt, length=T)
+
+init_state = [π/2, 0.0]
+pendulum = Pendulum(init_state, sys_mass, sys_length, sys_damping, sys_mnoise_sd)
 
 states = zeros(2,T)
 observations = zeros(T)
@@ -115,12 +60,9 @@ observations = zeros(T)
 controls = zeros(T)
 
 for k in 1:T
-    
     states[:,k] = pendulum.state
     observations[k] = pendulum.sensor
-    
-    update!(pendulum, controls[k], Δt=Δt)
-    
+    step!(pendulum, controls[k], Δt=Δt)
 end
 
 plot(xlabel="time [s]",ylabel="angle", size=(900,300))
@@ -132,14 +74,14 @@ scatter!(time, observations, color="black", label="measurements")
 
 ```julia
 # Length of trial
-T      = 1200
+T      = 500
 time   = range(0.0, step=Δt, length=T);
 thorizon = 5;
 ```
 
 ```julia
 # Degree
-H = 5
+H = 3
 
 # Basis expansion
 # ϕ(x; N::Int64 = 10) = [1; cat([[cos.(2π*n*x); sin.(2π*n*x)] for n = 1:N]..., dims=1)]
@@ -259,7 +201,7 @@ u_ = zeros(T)
 pred_m = zeros(thorizon,T)
 pred_s = zeros(thorizon,T)
 
-for j in 1:30
+for j in 1:3
 
     A  = randn(10)*5
     Ω  = rand(10)*3
@@ -269,7 +211,7 @@ for j in 1:30
     init_state = [randn(), 0.0]
 
     # Start system
-    pendulum = Pendulum(init_state, pendulum_mass, pendulum_length, mnoise_sd)
+    pendulum = Pendulum(init_state, sys_mass, sys_length, sys_damping, sys_mnoise_sd)
 
     # Preallocate
     z_ = zeros(2,T)
@@ -285,7 +227,7 @@ for j in 1:30
         "Act upon environment"
 
         # Alter system state based on control
-        update!(pendulum, u_[k], Δt=Δt)
+        step!(pendulum, u_[k], Δt=Δt)
 
         "Update parameter beliefs"
 
@@ -325,8 +267,9 @@ end
 ```
 
 ```julia
+K = 1
 p1 = plot(time, z_[1,:], color="blue", label="state", ylabel="angle")
-plot!(time, pred_m[1,:], ribbon=pred_s[1,:], color="purple", label="prediction")
+plot!(time, pred_m[K,:], ribbon=pred_s[K,:], color="purple", label="k=$K prediction")
 scatter!( time, y_, color="black", markersize=2, label="measurement")
 p4 = plot(time, u_, color="red", ylabel="controls", xlabel="time [s]")
 
@@ -335,10 +278,6 @@ plot(p1,p4, layout=grid(2,1, heights=[.7, .3]), size=(900,600))
 
 ```julia
 savefig("figures/NARX-EFE-pendulum_filtering.png")
-```
-
-```julia
-scatter(mean(pθ[end]))
 ```
 
 ```julia
@@ -377,10 +316,10 @@ function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
     "Expected Free Energy"
     
     # Unpack goal state
-    μ_star, σ_star = goalp
+    m_star, v_star = goalp
 
     # Unpack parameters
-    mθ, mτ = params
+    mθ, Sθ, mτ = params
 
     # Recursive buffer
     vbuffer = 1e-8*ones(length(mθ))
@@ -392,21 +331,22 @@ function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
         ubuffer = backshift(ubuffer, control[t])
         
         # Prediction
-        μ_y = dot(mθ, ϕ([xbuffer; ubuffer], D=H))
-        σ_y = sqrt(mθ'*diagm(vbuffer)*mθ + inv(mτ))
+        ϕ_k = ϕ([xbuffer; ubuffer], D=H)
+        m_y = dot(mθ, ϕ_k)
+        v_y = ϕ_k'*Sθ*ϕ_k + inv(mτ)
 
-        # Calculate conditional entropy
-        ambiguity = 0.5(log(2pi) + log(σ_y))
+        # Conditional entropy of q(y|u)
+        ambiguity = log(v_y)./2
         
-        # Risk as KL between marginal and goal prior
-        risk = 0.5*(log(σ_star/σ_y) + (μ_y - μ_star)'*inv(σ_star)*(μ_y - μ_star) + tr(inv(σ_star)*σ_y))
+        # KL-divergence between predicted marginal and goal prior
+        risk = 0.5*(log(v_star/v_y) + (m_y - m_star)'*inv(v_star)*(m_y - m_star) + tr(inv(v_star)*v_y))
         
         # Add to cumulative EFE
-        cEFE += risk + ambiguity# + λ*control[t]^2
+        cEFE += risk + ambiguity + λ*control[t]^2
         
         # Update previous 
-        xbuffer = backshift(xbuffer, μ_y)
-        vbuffer = backshift(vbuffer, σ_y^2)        
+        xbuffer = backshift(xbuffer, m_y)
+        vbuffer = backshift(vbuffer, v_y)        
     end
     return cEFE
 end;
@@ -414,9 +354,9 @@ end;
 
 ```julia
 # Length of trial
-T      = 500
+T      = 100
 time   = range(0.0, step=Δt, length=T)
-thorizon = 5;
+thorizon = 3;
 
 # VI options
 num_iters = 5;
@@ -426,14 +366,15 @@ end
 
 # Set control properties
 setpoint = 3.141592
-goal_pdf = (setpoint, 1e-6)
+goal_prior = (setpoint, 1e-3)
 u_lims = (-100, 100)
+opts = Optim.Options(time_limit=10)
 
 # Initial state
 init_state = [randn(), 0.0]
 
 # Start system
-pendulum = Pendulum(init_state, pendulum_mass, pendulum_length, mnoise_sd)
+pendulum = Pendulum(init_state, sys_mass, sys_length, sys_damping, sys_mnoise_sd)
 
 # Preallocate
 z_ = zeros(2,T)
@@ -450,7 +391,7 @@ fe = zeros(num_iters, T)
     
     "Act upon environment"
     
-    update!(pendulum, u_[k], Δt=Δt)
+    step!(pendulum, u_[k], Δt=Δt)
     
     "Update parameter beliefs"
     
@@ -479,13 +420,14 @@ fe = zeros(num_iters, T)
     
     # Extract MAP parameters
     mθ = mode(results.posteriors[:θ])
+    Sθ = cov( results.posteriors[:θ])
     mτ = mode(results.posteriors[:τ])
     
     # Objective function
-    J(policy) = EFE(policy, xbuffer, ubuffer, goal_pdf, (mθ, mτ), λ=1e-5, time_horizon=thorizon)
+    J(policy) = EFE(policy, xbuffer, ubuffer, goal_prior, (mθ, Sθ, mτ), λ=1e-5, time_horizon=thorizon)
 
     # Minimize
-    results = optimize(J, u_lims[1], u_lims[2], zeros(thorizon), Fminbox(LBFGS()), autodiff=:forward)
+    results = optimize(J, zeros(thorizon), LBFGS(), opts, autodiff=:forward)
     
     # Control law
     policy = Optim.minimizer(results)
@@ -547,10 +489,6 @@ anim = @animate for k in 2:2:(T-thorizon-1)
     end
 end
 gif(anim, "figures/NARX-EFE-pendulum_plan_trial00.gif", fps=24)
-```
-
-```julia
-
 ```
 
 ```julia
