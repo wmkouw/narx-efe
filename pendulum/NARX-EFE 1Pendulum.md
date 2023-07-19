@@ -81,7 +81,7 @@ thorizon = 5;
 
 ```julia
 # Degree
-H = 3
+H = 1
 
 # Basis expansion
 # ϕ(x; N::Int64 = 10) = [1; cat([[cos.(2π*n*x); sin.(2π*n*x)] for n = 1:N]..., dims=1)]
@@ -140,11 +140,11 @@ end
 ```julia
 function future(controls, xbuffer, ubuffer, params; time_horizon=1)
     
-    μ_y = zeros(time_horizon)
-    σ_y = zeros(time_horizon)
+    m_y = zeros(time_horizon)
+    v_y = zeros(time_horizon)
 
     # Unpack parameters
-    mθ, mτ = params
+    mθ,Sθ,mτ = params
 
     # Recursive buffer
     vbuffer = 1e-8*ones(length(mθ))
@@ -155,22 +155,23 @@ function future(controls, xbuffer, ubuffer, params; time_horizon=1)
         ubuffer = backshift(ubuffer, controls[t])
         
         # Prediction
-        μ_y[t] = dot(mθ, ϕ([xbuffer; ubuffer], D=H))
-        σ_y[t] = sqrt(mθ'*diagm(vbuffer)*mθ + inv(mτ))
+        ϕ_k = ϕ([xbuffer; ubuffer], D=H)
+        m_y[t] = dot(mθ, ϕ_k)
+        v_y[t] = ϕ_k'*Sθ*ϕ_k + inv(mτ)
         
         # Update previous 
-        xbuffer = backshift(xbuffer, μ_y[t])
-        vbuffer = backshift(vbuffer, σ_y[t]^2)     
+        xbuffer = backshift(xbuffer, m_y[t])
+        vbuffer = backshift(vbuffer, v_y[t])     
         
     end
-    return μ_y, σ_y
+    return m_y, v_y
 end
 ```
 
 ```julia
 # Specify prior distributions
 pτ0 = GammaShapeRate(1e0, 1e0)
-pθ0 = MvNormalMeanPrecision(zeros(M), 1e-4diagm(ones(M)))
+pθ0 = MvNormalMeanCovariance(ones(M), 1e2diagm(ones(M)))
 ```
 
 ```julia
@@ -255,7 +256,7 @@ for j in 1:3
         pred_m[:,k], pred_s[:,k] = future(u_[k:k+thorizon], 
                                           xbuffer, 
                                           ubuffer, 
-                                          (mean(pθ[end]), mode(pτ[end])), 
+                                          (mode(pθ[end]), cov(pθ[end]), mode(pτ[end])), 
                                           time_horizon=thorizon)
 
         # Track states and sensor measurements
@@ -342,7 +343,8 @@ function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
         risk = 0.5*(log(v_star/v_y) + (m_y - m_star)'*inv(v_star)*(m_y - m_star) + tr(inv(v_star)*v_y))
         
         # Add to cumulative EFE
-        cEFE += risk + ambiguity + λ*control[t]^2
+#         cEFE += risk + ambiguity + λ*control[t]^2
+        cEFE += risk + λ*control[t]^2
         
         # Update previous 
         xbuffer = backshift(xbuffer, m_y)
@@ -354,9 +356,9 @@ end;
 
 ```julia
 # Length of trial
-T      = 100
+T      = 1000
 time   = range(0.0, step=Δt, length=T)
-thorizon = 3;
+thorizon = 10;
 
 # VI options
 num_iters = 5;
@@ -371,7 +373,11 @@ u_lims = (-100, 100)
 opts = Optim.Options(time_limit=10)
 
 # Initial state
-init_state = [randn(), 0.0]
+init_state = [0.0, 0.0]
+
+# Initialize beliefs
+pτ = [pτ0]
+pθ = [pθ0]
 
 # Start system
 pendulum = Pendulum(init_state, sys_mass, sys_length, sys_damping, sys_mnoise_sd)
@@ -424,7 +430,7 @@ fe = zeros(num_iters, T)
     mτ = mode(results.posteriors[:τ])
     
     # Objective function
-    J(policy) = EFE(policy, xbuffer, ubuffer, goal_prior, (mθ, Sθ, mτ), λ=1e-5, time_horizon=thorizon)
+    J(policy) = EFE(policy, xbuffer, ubuffer, goal_prior, (mθ, Sθ, mτ), λ=1e-2, time_horizon=thorizon)
 
     # Minimize
     results = optimize(J, zeros(thorizon), LBFGS(), opts, autodiff=:forward)
@@ -439,7 +445,7 @@ fe = zeros(num_iters, T)
     pred_m[:,k], pred_s[:,k] = future(policy, 
                                       xbuffer, 
                                       ubuffer, 
-                                      (mean(pθ[end]), mode(pτ[end])), 
+                                      (mθ, Sθ, mτ), 
                                       time_horizon=thorizon)
     
     # Update previous observations buffer
@@ -470,6 +476,11 @@ savefig("figures/NARX-EFE-pendulum_trial00.png")
 ```
 
 ```julia
+tSθ = [tr(cov(pθ[k])) for k in 1:T]
+plot(tSθ)
+```
+
+```julia
 limsb = [minimum(z_[2,:])*1.5, maximum(z_[2,:])*1.5]
 
 window = 20
@@ -489,6 +500,10 @@ anim = @animate for k in 2:2:(T-thorizon-1)
     end
 end
 gif(anim, "figures/NARX-EFE-pendulum_plan_trial00.gif", fps=24)
+```
+
+```julia
+mean(pθ[end])
 ```
 
 ```julia
