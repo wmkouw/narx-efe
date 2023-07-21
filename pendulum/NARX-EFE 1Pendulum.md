@@ -28,8 +28,10 @@ where $m$ is mass, $l$ is length, $\gamma$ is damping and $\mathcal{g}$ is Earth
 
 ```julia
 using Revise
+using ForwardDiff
 using Optim
 using RxInfer
+using SpecialFunctions
 using LinearAlgebra
 using ProgressMeter
 using Distributions
@@ -70,14 +72,7 @@ plot!(time, states[1,:], color="blue", label="state")
 scatter!(time, observations, color="black", label="measurements")
 ```
 
-## NARX parameter estimation
-
-```julia
-# Length of trial
-T      = 500
-time   = range(0.0, step=Δt, length=T);
-thorizon = 5;
-```
+## NARX model
 
 ```julia
 # Degree
@@ -93,33 +88,10 @@ H = 1
 ```julia
 # Delay order
 Lx = 3
-Lu = 3
+Lu = 1
 
 # Model order
 M = size(ϕ(zeros(Lx+Lu), D=H),1)
-```
-
-```julia
-# Control policy
-# Ω = 10 .^range(-6,stop=2, length=30)
-# u_ = 100*mean([sin.(ω.*time) for ω in Ω]);
-
-# function u(t)
-#     u = 1.0
-#     if t > 1.0
-#         u = 0.0
-#     end
-#     return
-# end
-# u_ = u(range(0.0, step=nt*dt, length=T+thorizon))
-
-# Pulse
-# u_ = [zeros(10); ones(100); zeros(T-110)];
-A  = rand(10)*200 .- 100
-Ω  = rand(10)*3
-u_ = mean([A[i]*sin.(Ω[i].*time) for i = 1:10])
-
-plot(time, u_, size=(900,300), color="red", xlabel="time (sec)", ylabel="control")
 ```
 
 ```julia
@@ -170,7 +142,7 @@ end
 
 ```julia
 # Specify prior distributions
-pτ0 = GammaShapeRate(1e0, 1e0)
+pτ0 = GammaShapeRate(1e-1, 1e-1)
 pθ0 = MvNormalMeanCovariance(ones(M), 1e2diagm(ones(M)))
 ```
 
@@ -188,10 +160,42 @@ pθ = [pθ[end]]
 
 ```julia
 # VI options
-num_iters = 5;
+num_iters = 10;
 constraints = @constraints begin 
     q(θ, τ) = q(θ)q(τ)
 end
+```
+
+## Parameter estimation
+
+```julia
+# Length of trial
+T      = 500
+time   = range(0.0, step=Δt, length=T);
+thorizon = 5;
+```
+
+```julia
+# Control policy
+# Ω = 10 .^range(-6,stop=2, length=30)
+# u_ = 100*mean([sin.(ω.*time) for ω in Ω]);
+
+# function u(t)
+#     u = 1.0
+#     if t > 1.0
+#         u = 0.0
+#     end
+#     return
+# end
+# u_ = u(range(0.0, step=nt*dt, length=T+thorizon))
+
+# Pulse
+# u_ = [zeros(10); ones(100); zeros(T-110)];
+A  = rand(10)*200 .- 100
+Ω  = rand(10)*3
+u_ = mean([A[i]*sin.(Ω[i].*time) for i = 1:10])
+
+plot(time, u_, size=(900,300), color="red", xlabel="time (sec)", ylabel="control")
 ```
 
 ```julia
@@ -256,7 +260,7 @@ for j in 1:3
         pred_m[:,k], pred_s[:,k] = future(u_[k:k+thorizon], 
                                           xbuffer, 
                                           ubuffer, 
-                                          (mode(pθ[end]), cov(pθ[end]), mode(pτ[end])), 
+                                          (mode(pθ[end]), cov(pθ[end]), mean(pτ[end])), 
                                           time_horizon=thorizon)
 
         # Track states and sensor measurements
@@ -313,17 +317,44 @@ gif(anim, "figures/NARX-EFE-pendulum_prediction.gif", fps=24)
 ## Expected Free Energy minimization
 
 ```julia
+function ambiguity(qθ,qτ,ϕ_k)
+    "Entropies of parameters minus joint entropy of future observation and parameters"
+    
+    μ_k, Σ_k = qθ
+    α_k, β_k = qτ
+    
+    S_k = [Σ_k        Σ_k*ϕ_k;
+           ϕ_k'*Σ_k   ϕ_k'*Σ_k*ϕ_k + β_k/α_k]
+    
+    Dθ = length(μ_k)
+    
+    t0 = -log(β_k/α_k)
+#     t1 = logdet(Σ_k)/2
+#     t2 = -logdet(S_k)/2
+    t3 = -(1+(Dθ-2)/2)*log(β_k)
+    t4 = (1+(Dθ-2)/2)*digamma(α_k)
+    
+    return t0+t3+t4
+end
+```
+
+```julia
+function risk(prediction, goal_prior)
+    "KL-divergence between marginal predicted observation and goal prior"
+    
+    m_pred, v_pred = prediction
+    m_star, v_star = goal_prior
+    
+    return 0.5*(log(v_star/v_pred) + (m_pred-m_star)'*inv(v_star)*(m_pred-m_star) + tr(inv(v_star)*v_pred))
+end
+```
+
+```julia
 function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
     "Expected Free Energy"
-    
-    # Unpack goal state
-    m_star, v_star = goalp
 
     # Unpack parameters
-    mθ, Sθ, mτ = params
-
-    # Recursive buffer
-    vbuffer = 1e-8*ones(length(mθ))
+    μ_k, Σ_k, α_k, β_k = params
     
     cEFE = 0
     for t in 1:time_horizon
@@ -333,22 +364,14 @@ function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
         
         # Prediction
         ϕ_k = ϕ([xbuffer; ubuffer], D=H)
-        m_y = dot(mθ, ϕ_k)
-        v_y = ϕ_k'*Sθ*ϕ_k + inv(mτ)
-
-        # Conditional entropy of q(y|u)
-        ambiguity = log(v_y)./2
-        
-        # KL-divergence between predicted marginal and goal prior
-        risk = 0.5*(log(v_star/v_y) + (m_y - m_star)'*inv(v_star)*(m_y - m_star) + tr(inv(v_star)*v_y))
+        m_y = dot(μ_k, ϕ_k)
+        v_y = ϕ_k'*Σ_k*ϕ_k + β_k/α_k
         
         # Add to cumulative EFE
-#         cEFE += risk + ambiguity + λ*control[t]^2
-        cEFE += risk + λ*control[t]^2
+        cEFE += ambiguity((μ_k, Σ_k), (α_k, β_k), ϕ_k) + risk((m_y,v_y),goalp) + λ*control[t]^2
         
         # Update previous 
-        xbuffer = backshift(xbuffer, m_y)
-        vbuffer = backshift(vbuffer, v_y)        
+        xbuffer = backshift(xbuffer, m_y)        
     end
     return cEFE
 end;
@@ -356,7 +379,7 @@ end;
 
 ```julia
 # Length of trial
-T      = 1000
+T      = 500
 time   = range(0.0, step=Δt, length=T)
 thorizon = 10;
 
@@ -369,8 +392,8 @@ end
 # Set control properties
 setpoint = 3.141592
 goal_prior = (setpoint, 1e-3)
-u_lims = (-100, 100)
 opts = Optim.Options(time_limit=10)
+λ = 1e-2
 
 # Initial state
 init_state = [0.0, 0.0]
@@ -425,12 +448,13 @@ fe = zeros(num_iters, T)
     "Optimal control"
     
     # Extract MAP parameters
-    mθ = mode(results.posteriors[:θ])
-    Sθ = cov( results.posteriors[:θ])
-    mτ = mode(results.posteriors[:τ])
+    μ_k = mode(results.posteriors[:θ])
+    Σ_k = cov( results.posteriors[:θ])
+    α_k = shape(results.posteriors[:τ])
+    β_k = rate( results.posteriors[:τ])
     
     # Objective function
-    J(policy) = EFE(policy, xbuffer, ubuffer, goal_prior, (mθ, Sθ, mτ), λ=1e-2, time_horizon=thorizon)
+    J(policy) = EFE(policy, xbuffer, ubuffer, goal_prior, (μ_k, Σ_k, α_k, β_k), λ=λ, time_horizon=thorizon)
 
     # Minimize
     results = optimize(J, zeros(thorizon), LBFGS(), opts, autodiff=:forward)
@@ -445,7 +469,7 @@ fe = zeros(num_iters, T)
     pred_m[:,k], pred_s[:,k] = future(policy, 
                                       xbuffer, 
                                       ubuffer, 
-                                      (mθ, Sθ, mτ), 
+                                      (μ_k, Σ_k, α_k/β_k), 
                                       time_horizon=thorizon)
     
     # Update previous observations buffer
@@ -500,10 +524,6 @@ anim = @animate for k in 2:2:(T-thorizon-1)
     end
 end
 gif(anim, "figures/NARX-EFE-pendulum_plan_trial00.gif", fps=24)
-```
-
-```julia
-mean(pθ[end])
 ```
 
 ```julia
