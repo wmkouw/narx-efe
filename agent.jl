@@ -2,6 +2,8 @@ using RxInfer
 using LinearAlgebra
 
 
+ϕ(x; D::Integer = 1) = cat([1; [x.^d for d in 1:D]]...,dims=1)
+
 @model function NARX(pθ_k, pτ_k)
     
     ϕ = datavar(Vector{Float64})
@@ -15,15 +17,13 @@ using LinearAlgebra
     y ~ NormalMeanPrecision(dot(θ,ϕ), τ)
 end
 
-ϕ(x; D::Integer = 1) = cat([1; [x.^d for d in 1:D]]...,dims=1)
-
 function predictions(policy, xbuffer, ubuffer, params; time_horizon=1)
     
-    μ_y = zeros(time_horizon)
-    σ_y = zeros(time_horizon)
+    m_y = zeros(time_horizon)
+    v_y = zeros(time_horizon)
 
     # Unpack parameters
-    mθ, mτ = params
+    mθ,Sθ,mτ = params
 
     # Recursive buffer
     vbuffer = 1e-8*ones(length(mθ))
@@ -31,54 +31,66 @@ function predictions(policy, xbuffer, ubuffer, params; time_horizon=1)
     for t in 1:time_horizon
         
         # Update control buffer
-        ubuffer = backshift(ubuffer, policy[t])
+        ubuffer = backshift(ubuffer, controls[t])
         
         # Prediction
-        μ_y[t] = dot(mθ, ϕ([xbuffer; ubuffer], D=H))
-        σ_y[t] = sqrt(mθ'*diagm(vbuffer)*mθ + inv(mτ))
+        ϕ_k = ϕ([xbuffer; ubuffer], D=H)
+        m_y[t] = dot(mθ, ϕ_k)
+        v_y[t] = ϕ_k'*Sθ*ϕ_k + inv(mτ)
         
         # Update previous 
-        xbuffer = backshift(xbuffer, μ_y[t])
-        vbuffer = backshift(vbuffer, σ_y[t]^2)     
+        xbuffer = backshift(xbuffer, m_y[t])
+        vbuffer = backshift(vbuffer, v_y[t])     
         
     end
-    return μ_y, σ_y
+    return m_y, v_y
+end
+
+function ambiguity(qθ,qτ,ϕ_k)
+    "Entropies of parameters minus joint entropy of future observation and parameters"
+    
+    μ_k, Σ_k = qθ
+    α_k, β_k = qτ
+    
+    S_k = [Σ_k        Σ_k*ϕ_k
+           ϕ_k'*Σ_k   ϕ_k'*Σ_k*ϕ_k + β_k/α_k]
+    
+    Dθ = length(μ_k)
+    
+    return logdet(Σ_k)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β_k) +(1+(Dθ-2)/2)*digamma(α_k)
+end
+
+function risk(prediction, goal_prior)
+    "KL-divergence between marginal predicted observation and goal prior"
+    
+    m_pred, v_pred = prediction
+    m_star, v_star = goal_prior
+    
+    return (log(v_star/v_pred) + (m_pred - m_star)'*inv(v_star)*(m_pred - m_star) + tr(inv(v_star)*v_pred))/2
 end
 
 function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
     "Expected Free Energy"
-    
-    # Unpack goal state
-    μ_star, σ_star = goalp
 
     # Unpack parameters
-    mθ, mτ = params
-
-    # Recursive buffer
-    vbuffer = 1e-8*ones(length(mθ))
+    μ_k, Σ_k, α_k, β_k = params
     
-    J = 0
+    cEFE = 0
     for t in 1:time_horizon
         
         # Update control buffer
         ubuffer = backshift(ubuffer, control[t])
         
         # Prediction
-        μ_y = dot(mθ, ϕ([xbuffer; ubuffer], D=H))
-        σ_y = sqrt(mθ'*diagm(vbuffer)*mθ + inv(mτ))
-
-        # Calculate conditional entropy
-        ambiguity = 0.5(log(2pi) + log(σ_y))
-        
-        # Risk as KL between marginal and goal prior
-        risk = 0.5*(log(σ_star/σ_y) + (μ_y - μ_star)'*inv(σ_star)*(μ_y - μ_star) + tr(inv(σ_star)*σ_y))
+        ϕ_k = ϕ([xbuffer; ubuffer], D=H)
+        m_y = dot(μ_k, ϕ_k)
+        v_y = ϕ_k'*Σ_k*ϕ_k + β_k/α_k
         
         # Add to cumulative EFE
-        J += risk + ambiguity + λ*control[t]^2
+        cEFE += ambiguity((μ_k, Σ_k), (α_k, β_k), ϕ_k) + risk((m_y,v_y),goalp) + λ*control[t]^2
         
         # Update previous 
-        xbuffer = backshift(xbuffer, μ_y)
-        vbuffer = backshift(vbuffer, σ_y^2)        
+        xbuffer = backshift(xbuffer, m_y)        
     end
-    return J
-end
+    return cEFE
+end;
