@@ -4,7 +4,7 @@ using RxInfer
 using Distributions
 using LinearAlgebra
 
-export NARXAgent, update!, ϕ, ambiguity, risk, EFE
+export NARXAgent, update!, predictions, ϕ, ambiguity, risk, EFE
 
 
 mutable struct NARXAgent
@@ -98,43 +98,51 @@ function update!(agent::NARXAgent, observation::Float64, control::Float64)
     agent.ybuffer = backshift(agent.ybuffer, observation)
 end
 
-function predictions(controls, xbuffer, ubuffer, params; time_horizon=1)
+function predictions(agent::NARXAgent, controls; time_horizon=1)
     
     m_y = zeros(time_horizon)
     v_y = zeros(time_horizon)
 
+    ybuffer = agent.ybuffer
+    ubuffer = agent.ubuffer
+
     # Unpack parameters
-    mθ,Sθ,mτ = params
+    μ = mean( agent.qθ)
+    Σ = cov(  agent.qθ)
+    α = shape(agent.qτ)
+    β = rate( agent.qτ)
     
     for t in 1:time_horizon
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
+        ϕ_t = ϕ([agent.ybuffer; agent.ubuffer], degree=agent.pol_degree)
         
         # Prediction
-        ϕ_k = ϕ([xbuffer; ubuffer], D=H)
-        m_y[t] = dot(mθ, ϕ_k)
-        v_y[t] = ϕ_k'*Sθ*ϕ_k + inv(mτ)
+        m_y[t] = dot(μ, ϕ_t)
+        v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
         
         # Update previous 
-        xbuffer = backshift(xbuffer, m_y[t])
+        ybuffer = backshift(ybuffer, m_y[t])
         
     end
     return m_y, v_y
 end
 
-function ambiguity(qθ,qτ,ϕ_k)
+function ambiguity(agent::NARXAgent, ϕ_k)
     "Entropies of parameters minus joint entropy of future observation and parameters"
     
-    μ_k, Σ_k = qθ
-    α_k, β_k = qτ
+    μ = mean( agent.qθ)
+    Σ = cov(  agent.qθ)
+    α = shape(agent.qτ)
+    β = rate( agent.qτ)
     
-    S_k = [Σ_k        Σ_k*ϕ_k
-           ϕ_k'*Σ_k   ϕ_k'*Σ_k*ϕ_k + β_k/α_k]
+    S_k = [Σ                 Σ*ϕ_k;
+           ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
     
-    Dθ = length(μ_k)
+    Dθ = length(μ)
     
-    return logdet(Σ_k)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β_k) +(1+(Dθ-2)/2)*digamma(α_k)
+    return logdet(Σ)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
 end
 
 function risk(prediction, goal_prior)
@@ -146,28 +154,33 @@ function risk(prediction, goal_prior)
     return (log(v_star/v_pred) + (m_pred - m_star)'*inv(v_star)*(m_pred - m_star) + tr(inv(v_star)*v_pred))/2
 end
 
-function EFE(control, xbuffer, ubuffer, goalp, params; λ=0.01, time_horizon=1)
+function EFE(agent::NARXAgent, controls, goalp; λ=0.01, time_horizon=1)
     "Expected Free Energy"
 
-    # Unpack parameters
-    μ_k, Σ_k, α_k, β_k = params
+    μ = mean( agent.qθ)
+    Σ = cov(  agent.qθ)
+    α = shape(agent.qτ)
+    β = rate( agent.qτ)
+
+    ybuffer = agent.ybuffer
+    ubuffer = agent.ubuffer
     
     cEFE = 0
     for t in 1:time_horizon
         
         # Update control buffer
         ubuffer = backshift(ubuffer, control[t])
+        ϕ_k = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
         
         # Prediction
-        ϕ_k = ϕ([xbuffer; ubuffer], D=H)
-        m_y = dot(μ_k, ϕ_k)
-        v_y = ϕ_k'*Σ_k*ϕ_k + β_k/α_k
+        m_y = dot(μ, ϕ_k)
+        v_y = ϕ_k'*Σ*ϕ_k + β/α
         
         # Add to cumulative EFE
-        cEFE += ambiguity((μ_k, Σ_k), (α_k, β_k), ϕ_k) + risk((m_y,v_y),goalp) + λ*control[t]^2
+        cEFE += ambiguity((μ, Σ), (α, β), ϕ_k) + risk((m_y,v_y), goalp) + λ*controls[t]^2
         
         # Update previous 
-        xbuffer = backshift(xbuffer, m_y)        
+        ybuffer = backshift(ybuffer, m_y)        
     end
     return cEFE
 end
