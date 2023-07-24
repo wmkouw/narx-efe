@@ -1,21 +1,32 @@
 module NARXAgents
 
+using Optim
 using RxInfer
 using Distributions
+using SpecialFunctions
 using LinearAlgebra
 
-export NARXAgent, update!, predictions, ϕ, ambiguity, risk, EFE
+export NARXAgent, update!, predictions, ϕ, minimizeEFE
 
 
 mutable struct NARXAgent
+    """
+    Active inference agent based on a Nonlinear Auto-Regressive model with eXogenous control.
+
+    Parameters are inferred through Bayesian filtering and controls through minimizing expected free energy.
+    """
 
     model           ::FactorGraphModel
     constraints     ::ConstraintsSpecification
 
+    free_energy     ::Vector{Float64}
     qθ              ::NormalDistributionsFamily
     qτ              ::GammaDistributionsFamily 
+    goal            ::NormalDistributionsFamily
 
+    thorizon        ::Integer
     num_iters       ::Integer
+    control_prior   ::Float64
 
     memory_actions  ::Integer
     memory_senses   ::Integer
@@ -27,10 +38,13 @@ mutable struct NARXAgent
 
     function NARXAgent(prior_coefficients, 
                        prior_precision; 
+                       goal_prior=NormalMeanVariance(0.0, 1.0),
                        memory_actions::Integer=1, 
                        memory_senses::Integer=1, 
                        pol_degree::Integer=1,
-                       num_iters::Integer=10)
+                       thorizon::Integer=1,
+                       num_iters::Integer=10,
+                       control_prior::Float64=1.0)
 
         model, _ = create_model(NARX(prior_coefficients, prior_precision))
 
@@ -38,6 +52,7 @@ mutable struct NARXAgent
             q(θ, τ) = q(θ)q(τ)
         end
 
+        free_energy = [Inf]
         ybuffer = zeros(memory_senses)
         ubuffer = zeros(memory_actions)
 
@@ -48,9 +63,13 @@ mutable struct NARXAgent
 
         return new(model, 
                    constraints,
+                   free_energy,
                    prior_coefficients, 
                    prior_precision,
+                   goal_prior,
+                   thorizon,
                    num_iters,
+                   control_prior,
                    memory_actions,
                    memory_senses,
                    pol_degree,
@@ -90,8 +109,10 @@ function update!(agent::NARXAgent, observation::Float64, control::Float64)
         returnvars    = (θ = KeepLast(), τ = KeepLast()),
         constraints   = agent.constraints, 
         iterations    = agent.num_iters,
+        free_energy   = true,
     )
 
+    agent.free_energy = results.free_energy
     agent.qθ = results.posteriors[:θ]
     agent.qτ = results.posteriors[:τ]
 
@@ -142,19 +163,20 @@ function ambiguity(agent::NARXAgent, ϕ_k)
     
     Dθ = length(μ)
     
-    return logdet(Σ)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
+    # return logdet(Σ)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
+    return -log(β/α) -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
 end
 
-function risk(prediction, goal_prior)
+function risk(agent::NARXAgent, prediction::Normal)
     "KL-divergence between marginal predicted observation and goal prior"
     
-    m_pred, v_pred = prediction
-    m_star, v_star = goal_prior
+    m_pred, v_pred = mean_var(prediction)
+    m_star, v_star = mean_var(agent.goal)
     
-    return (log(v_star/v_pred) + (m_pred - m_star)'*inv(v_star)*(m_pred - m_star) + tr(inv(v_star)*v_pred))/2
+    return (log(v_star/v_pred) + (m_pred-m_star)'*inv(v_star)*(m_pred-m_star) + tr(inv(v_star)*v_pred))/2
 end
 
-function EFE(agent::NARXAgent, controls, goalp; λ=0.01, time_horizon=1)
+function EFE(agent::NARXAgent, controls)
     "Expected Free Energy"
 
     μ = mean( agent.qθ)
@@ -165,24 +187,69 @@ function EFE(agent::NARXAgent, controls, goalp; λ=0.01, time_horizon=1)
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
     
-    cEFE = 0
-    for t in 1:time_horizon
+    J = 0
+    for t in 1:agent.thorizon
         
         # Update control buffer
-        ubuffer = backshift(ubuffer, control[t])
+        ubuffer = backshift(ubuffer, controls[t])
         ϕ_k = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
         v_y = ϕ_k'*Σ*ϕ_k + β/α
         
-        # Add to cumulative EFE
-        cEFE += ambiguity((μ, Σ), (α, β), ϕ_k) + risk((m_y,v_y), goalp) + λ*controls[t]^2
+        # Accumulate EFE
+        J += ambiguity(agent, ϕ_k) + risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
     end
-    return cEFE
+    return J
+end
+
+function prediction_error(agent::NARXAgent, controls)
+    "EFE functional without ambiguity term."
+
+    μ = mean( agent.qθ)
+    Σ = cov(  agent.qθ)
+    α = shape(agent.qτ)
+    β = rate( agent.qτ)
+
+    ybuffer = agent.ybuffer
+    ubuffer = agent.ubuffer
+    
+    J = 0
+    for t in 1:agent.thorizon
+        
+        # Update control buffer
+        ubuffer = backshift(ubuffer, controls[t])
+        ϕ_k = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
+        
+        # Prediction
+        m_y = dot(μ, ϕ_k)
+        v_y = ϕ_k'*Σ*ϕ_k + β/α
+        
+        # Accumulate objective function
+        J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
+        
+        # Update previous 
+        ybuffer = backshift(ybuffer, m_y)        
+    end
+    return J
+end
+
+function minimizeEFE(agent::NARXAgent; tlimit=10, risk_only::Bool=false)
+    "Minimize EFE function and return policy."
+
+    opts = Optim.Options(time_limit=tlimit)
+
+    # Objective function
+    if risk_only
+        results = optimize(u -> prediction_error(agent, u), zeros(agent.thorizon), LBFGS(), opts, autodiff=:forward)
+    else
+        results = optimize(u -> EFE(agent, u), zeros(agent.thorizon), LBFGS(), opts, autodiff=:forward)
+    end
+    return Optim.minimizer(results)
 end
 
 function backshift(x::AbstractVector, a::Number)
