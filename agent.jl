@@ -1,20 +1,66 @@
 using RxInfer
+using Distributions
 using LinearAlgebra
+
+export Agent
+
+
+mutable struct Agent
+
+
+    model        ::FactorGraphModel
+    constraints  ::ConstraintsSpecification
+
+    qθ           ::NormalDistributionsFamily
+    qτ           ::GammaDistributionsFamily 
+
+    num_vi_iters ::Integer
+
+    function Agent(prior_coefficients, prior_precision; num_vi_iters=1)
+
+        model, vars = create_model(NARX(qθ,qτ))
+
+        constraints = @constraints begin 
+            q(θ, τ) = q(θ)q(τ)
+        end
+
+        return new(model, 
+                   constraints,
+                   prior_coefficients, 
+                   prior_precision,
+                   num_vi_iters)
+    end
+end
 
 
 ϕ(x; D::Integer = 1) = cat([1; [x.^d for d in 1:D]]...,dims=1)
 
-@model function NARX(pθ_k, pτ_k)
+@model function NARX(pθ, pτ)
     
     ϕ = datavar(Vector{Float64})
     y = datavar(Float64)
     
     # Priors
-    θ  ~ MvNormalMeanCovariance(mean(pθ_k), cov(pθ_k))
-    τ  ~ GammaShapeRate(shape(pτ_k), rate(pτ_k))
+    θ  ~ MvNormalMeanCovariance(mean(pθ), cov(pθ))
+    τ  ~ GammaShapeRate(shape(pτ), rate(pτ))
         
     # Likelihood
     y ~ NormalMeanPrecision(dot(θ,ϕ), τ)
+
+    return θ,τ
+end
+
+function update_parameters!(agent::Agent, observation::Float64, buffer::Vector{Float64})
+
+    results = inference(
+        model         = NARX(agent.qθ, agent.qτ), 
+        data          = (y = observation, ϕ = buffer), 
+        constraints   = agent.constraints, 
+        iterations    = agent.num_vi_iters,
+    )
+
+    agent.qθ = results.posteriors[:θ]
+    agent.qτ = results.posteriors[:τ]
 end
 
 function predictions(policy, xbuffer, ubuffer, params; time_horizon=1)
@@ -24,9 +70,6 @@ function predictions(policy, xbuffer, ubuffer, params; time_horizon=1)
 
     # Unpack parameters
     mθ,Sθ,mτ = params
-
-    # Recursive buffer
-    vbuffer = 1e-8*ones(length(mθ))
     
     for t in 1:time_horizon
         
@@ -40,7 +83,6 @@ function predictions(policy, xbuffer, ubuffer, params; time_horizon=1)
         
         # Update previous 
         xbuffer = backshift(xbuffer, m_y[t])
-        vbuffer = backshift(vbuffer, v_y[t])     
         
     end
     return m_y, v_y
