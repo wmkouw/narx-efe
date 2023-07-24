@@ -7,11 +7,10 @@ mutable struct ARXsys
 
     order_inputs   ::Integer
     order_outputs  ::Integer
+    input_buffer   ::Vector{Float64}
+    output_buffer  ::Vector{Float64}
 
     coefficients   ::Vector{Float64}
-
-    output_buffer  ::Vector{Float64}
-    input_buffer   ::Vector{Float64}
     
     observation    ::Float64
 
@@ -22,13 +21,13 @@ mutable struct ARXsys
 
         input_buffer  = zeros(order_inputs)
         output_buffer = zeros(order_outputs)
-        init_observation = mnoise_sd*randn()
+        init_observation = 0.0
 
         return new(order_inputs, 
                    order_outputs,
-                   coefficients,
-                   output_buffer,
                    input_buffer,
+                   output_buffer,
+                   coefficients,
                    init_observation,
                    mnoise_sd)
     end
@@ -39,11 +38,11 @@ function update!(sys::ARXsys, input::Float64)
     # Update buffer with previous observation
     sys.output_buffer = backshift(sys.output_buffer, sys.observation)
 
-    # Generate new observation
-    sys.observation  = dot(sys.coefficients, sys.output_buffer) + input + sys.mnoise_sd*randn()
-    
-    # Remember input
+    # Update input buffer
     sys.input_buffer = backshift(sys.input_buffer, input)
+
+    # Generate new observation
+    sys.observation  = dot(sys.coefficients, [sys.output_buffer; sys.input_buffer]) + sys.mnoise_sd*randn()    
     
 end
 
