@@ -196,7 +196,7 @@ function EFE(agent::NARXAgent, controls)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
-        v_y = ϕ_k'*Σ*ϕ_k + β/α
+        v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
         
         # Accumulate EFE
         J += ambiguity(agent, ϕ_k) + risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
@@ -227,7 +227,7 @@ function prediction_error(agent::NARXAgent, controls)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
-        v_y = ϕ_k'*Σ*ϕ_k + β/α
+        v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
         
         # Accumulate objective function
         J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
