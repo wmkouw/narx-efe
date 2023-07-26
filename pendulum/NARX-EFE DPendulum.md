@@ -18,13 +18,37 @@ jupyter:
 An Expected Free Energy minimizing agent based on a nonlinear autoregressive model with exogenous input.
 
 
-## System: driven damped pendulum
+## System: double pendulum
 
-Consider a single pendulum with angle $\theta(t)$ and input $u(t)$ evolving according to:
+Consider a double pendulum with angles $\theta_1(t), \theta_2(t)$ and input $u(t)$. Using Lagrangian mechanics, we obtain the following equations of motion:
 
-$$ \ddot{\theta} + \frac{\mathcal{g}}{l} \sin(\theta) + \frac{\gamma}{l} \dot{\theta} = \frac{1}{ml} u\, .$$
+$$\begin{align} 
+J_a \ddot{\theta}_1 + J_x \cos(\theta_1 - \theta_2)\ddot{\theta}_2 + J_x \sin(\theta_1 - \theta_2)\dot{\theta}_2^2 + \mu_1 \sin \theta_1 - K_t (\theta_2 - \theta_1) &= 0 \\
+J_b \ddot{\theta}_2 + J_x \cos(\theta_1 - \theta_2)\ddot{\theta}_1 - J_x \sin(\theta_1 - \theta_2)\dot{\theta}_1^2 + \mu_2 \sin \theta_2 - K_t (\theta_2 - \theta_1) &= 0
+\end{align}$$
+
+where we've used the shorthand notation:
+
+$$\begin{align}
+J_a = \frac{1}{3}m_1 l_1^2 + m_2 l_1^2 \, , \quad
+J_b = \frac{1}{3}m_2 l_2^2 \, , \quad
+J_x = \frac{1}{2}m_2 l_1 l_2 \, , \quad
+\mu_1 = (\frac{1}{2}m_1 + m_2)Gl_2 \, , \quad
+\mu_2 = \frac{1}{2}m_2 G l_2 \, .
+\end{align}$$
+
+After some manipulation, we can express this as:
+
+$$\begin{align} 
+\dot{z} = \begin{bmatrix} z_3 \\ z_4 \\ M(z_1,z_2)^{-1} \begin{bmatrix} - J_x \sin(\theta_1 - \theta_2)\dot{\theta}_2^2 - \mu_1 \sin \theta_1 + K_t (\theta_2 - \theta_1) \\
+ J_x \sin(\theta_1 - \theta_2)\dot{\theta}_1^2 - \mu_2 \sin \theta_2 + K_t (\theta_2 - \theta_1) \end{bmatrix} \end{bmatrix}
+\end{align}$$
 
 where $m$ is mass, $l$ is length, $\gamma$ is damping and $\mathcal{g}$ is Earth's gravity.
+
+$$\begin{align}
+M(\theta_1,\theta_2)^{-1} = \frac{1}{J_a J_b - J_x^2 \cos(\theta_1 - \theta_2)^2} \begin{bmatrix} J_b & -J_x \cos(\theta_1 - \theta_2) \\ -J_x \cos(\theta_1 - \theta_2) & J_a \end{bmatrix}
+\end{align}$$
 
 ```julia
 using Revise
@@ -43,14 +67,14 @@ includet("./Pendulums.jl"); using .Pendulums
 
 ```julia
 # System parameters
-sys_mass = 2.0
-sys_length = 0.5
-sys_damping = 0.1
-sys_mnoise_sd = 1e-2
+sys_mass = [1.0, 2.0]
+sys_length = [1.0, 1.0]
+sys_damping = 0.0
+sys_mnoise_S = 1e-2*diagm(ones(2))
 ```
 
 ```julia
-N = 300
+N = 200
 Δt = 0.05
 tsteps = range(0.0, step=Δt, length=N)
 ```
@@ -59,35 +83,46 @@ tsteps = range(0.0, step=Δt, length=N)
 # Inputs
 A  = rand(10)*200 .- 100
 Ω  = rand(10)*3
-controls = mean([A[i]*sin.(Ω[i].*tsteps) for i = 1:10]) ./ 10;
+controls = transpose([rand(N) mean([A[i]*sin.(Ω[i].*tsteps) for i = 1:10])./5])
 ```
 
 ```julia
-init_state = [π/2, 0.0]
-pendulum = SPendulum(init_state = init_state, 
+init_state = [0.0, 0.0, 0.0, 0.0]
+pendulum = DPendulum(init_state = init_state, 
                      mass = sys_mass, 
                      length = sys_length, 
                      damping = sys_damping, 
-                     mnoise_sd = sys_mnoise_sd, 
+                     mnoise_S = sys_mnoise_S, 
                      Δt=Δt)
 
-states = zeros(2,N)
-observations = zeros(N)
+states = zeros(4,N)
+observations = zeros(2,N)
 
 for k in 1:N
     states[:,k] = pendulum.state
-    observations[k] = pendulum.sensor
-    step!(pendulum, controls[k])
+    observations[:,k] = pendulum.sensor
+    step!(pendulum, controls[:,k])
 end
 ```
 
 ```julia
-p1 = plot(ylabel="angle")
+observations
+```
+
+```julia
+p101 = plot(ylabel="θ₁")
 plot!(tsteps, states[1,:], color="blue", label="state")
-scatter!(tsteps, observations, color="black", label="measurements")
-p2 = plot(xlabel="time [s]", ylabel="torque")
-plot!(tsteps, controls[:], color="red")
-plot(p1,p2, layout=grid(2,1, heights=[0.7, 0.3]), size=(900,600))
+scatter!(tsteps, observations[1,:], color="black", label="measurements")
+p102 = plot(ylabel="θ₂")
+plot!(tsteps, states[2,:], color="blue", label="state")
+scatter!(tsteps, observations[2,:], color="black", label="measurements")
+p103 = plot(xlabel="time [s]", ylabel="torque")
+plot!(tsteps, controls', labels=["u1" "u2"])
+plot(p101,p102,p103, layout=grid(3,1, heights=[0.4, 0.4, 0.2]), size=(900,600))
+```
+
+```julia
+savefig("figures/NARX-EFE-2Pendulum-simulation.png")
 ```
 
 ## NARX model
@@ -106,8 +141,8 @@ M = size(ϕ(zeros(Ly+Lu), degree=H),1);
 
 ```julia
 # Specify prior distributions
-pτ0 = GammaShapeRate(1e0, 1e-1)
-pθ0 = MvNormalMeanCovariance(ones(M), 10diagm(ones(M)))
+pτ0 = GammaShapeRate(1e0, 1e0)
+pθ0 = MvNormalMeanCovariance(ones(M), 100diagm(ones(M)))
 ```
 
 ```julia
@@ -127,10 +162,10 @@ preds = (zeros(N,T), zeros(N,T))
 @showprogress for k in 1:N
     
     # Make predictions
-    preds[1][k,:], preds[2][k,:] = predictions(agent, controls[k], time_horizon=T)
+    preds[1][k,:], preds[2][k,:] = predictions(agent, controls[2,k], time_horizon=T)
     
     # Update beliefs
-    NARXAgents.update!(agent, observations[k], controls[k])
+    NARXAgents.update!(agent, observations[2,k], controls[2,k])
     FE[:,k] = agent.free_energy
     
     push!(qθ, agent.qθ)
@@ -144,9 +179,9 @@ plot(FE[:], ylabel="F[q]")
 ```
 
 ```julia
-limsb = [minimum(observations)*1.5, maximum(observations)*1.5]
+limsb = [minimum(observations[:])*1.5, maximum(observations[:])*1.5]
 p1 = plot(xlabel="time [steps]", title="Observations vs $T-step ahead predictions", ylims=limsb)
-scatter!(observations[2:end], color="black", label="observations")
+scatter!(observations[2,2:end], color="black", label="observations")
 plot!(preds[1][2:end,T], ribbon=preds[2][2:end,T], color="purple", label="k=$T prediction")
 ```
 
@@ -156,25 +191,25 @@ plot!(preds[1][2:end,T], ribbon=preds[2][2:end,T], color="purple", label="k=$T p
 # Length of trial
 N = 150
 tsteps = range(0.0, step=Δt, length=N)
-T = 20
+T = 3
 
 # Set control properties
 goal = NormalMeanVariance(3.14, 1e-4)
 control_prior = 1e-2
 num_iters = 10
-u_lims = (-50, 50)
+u_lims = (-100, 100)
 
 # Initialize beliefs
 pτ = [pτ0]
 pθ = [pθ0]
 
 # Start system
-init_state = [0.0, 0.0]
-pendulum = SPendulum(init_state = init_state, 
+init_state = [0.0, 0.0, 0.0, 0.0]
+pendulum = DPendulum(init_state = init_state, 
                      mass = sys_mass, 
                      length = sys_length, 
                      damping = sys_damping, 
-                     mnoise_sd = sys_mnoise_sd, 
+                     mnoise_S = sys_mnoise_S, 
                      Δt=Δt)
 
 # Start agent
@@ -198,8 +233,8 @@ FE = zeros(num_iters, N)
 @showprogress for k in 1:N
     
     # Act upon environment
-    step!(pendulum, u_[k])
-    y_[k] = pendulum.sensor
+    step!(pendulum, [0.0; u_[k]])
+    y_[k] = pendulum.sensor[2]
     
     # Update parameter beliefs
     NARXAgents.update!(agent, y_[k], u_[k])
@@ -224,7 +259,7 @@ plot(FE[end,:] .- FE[1,:])
 
 ```julia
 p1 = plot(tsteps, y_, color="black", label="observations")
-hline!([mean(goal)], color="green", label="goal")
+hline!([mean(goal)], color="green", label="goal",)
 p4 = plot(tsteps, u_[1:end-1], color="red", ylabel="controls", xlabel="time [s]")
 
 plot(p1,p4, layout=grid(2,1, heights=[.7, .3]), size=(900,400))

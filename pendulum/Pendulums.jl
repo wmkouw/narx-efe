@@ -60,33 +60,57 @@ end
 
 params(sys::Pendulum) = (sys.mass, sys.length, sys.damping)
 
-function dzdt(sys::SPendulum, Δstate::Vector, u::Float64)
-
-    z = sys.state + Δstate
-    
+function dzdt(sys::SPendulum, u::Float64; Δstate::Vector=zeros(2))
+    "Equations of motion of single pendulum"
+    z = sys.state + Δstate 
     mass, length, damping = params(sys)
     return [z[2]; -9.81/length*sin(z[1]) - damping*length*z[2] + 1/mass*u] 
 end
 
-function RK4(sys::Pendulum, u::Float64)
+function dzdt(sys::DPendulum, u::Vector{Float64}; Δstate::Vector=zeros(4), κ::Float64=0.0, gravity::Float64=9.81)
+    "Equations of motion of double pendulum"
     
-    K1 = dzdt(sys, zeros(2)   , u)
-    K2 = dzdt(sys, K1*sys.Δt/2, u)
-    K3 = dzdt(sys, K2*sys.Δt/2, u)
-    K4 = dzdt(sys, K3*sys.Δt  , u)
+    z = sys.state + Δstate 
+
+    (m1,m2), (l1,l2), damping = params(sys)
+
+    # Shorthand notation
+    Ja = 1/3*m1*l1^2 + m2*l1^2
+    Jb = 1/3*m2*l2^2
+    Jx = 1/2*m2*l1*l2
+    μ1 = (m1/2 + m2)*gravity*l1
+    μ2 = 1/2*m2*gravity*l2
+    
+    # Inverse mass (inertia matrix)
+    Mi = 1/(Ja*Jb - Jx*cos(z[1] - z[2])*Jx*cos(z[1] - z[2]))*[Jb -Jx*cos(z[1] - z[2]);-Jx*cos(z[1] - z[2]) Ja]
+    
+    # Equations of motion
+    ddθ1 = -Jx*sin(z[1] - z[2])*z[4]^2 - μ1*sin(z[1]) + κ*sin(z[2] - z[1]) + u[1]
+    ddθ2 =  Jx*sin(z[1] - z[2])*z[3]^2 - μ2*sin(z[2]) + κ*sin(z[2] - z[1]) + u[2]
+    ddθ = Mi*[ddθ1, ddθ2]
+    
+    return [z[3]; z[4]; ddθ[1]; ddθ[2]]
+end
+
+function RK4(sys::Pendulum, u)
+    
+    K1 = dzdt(sys, u)
+    K2 = dzdt(sys, u, Δstate=K1*sys.Δt/2)
+    K3 = dzdt(sys, u, Δstate=K2*sys.Δt/2)
+    K4 = dzdt(sys, u, Δstate=K3*sys.Δt  )
     
     return sys.Δt/6 * (K1 + 2K2 + 2K3 + K4)
 end
 
 function update!(sys::Pendulum, u)
-    sys.state  = sys.state + RK4(sys, u)
+    sys.state = sys.state + RK4(sys, u)
 end
 
 function emit!(sys::SPendulum)
     sys.sensor = sys.state[1] + sys.mnoise_sd * randn()
 end
 function emit!(sys::DPendulum)
-    sys.sensor = sys.state[1:2] + cholesky(sys.mnoise_S).L * randn()
+    sys.sensor = sys.state[1:2] + cholesky(sys.mnoise_S).L * randn(2)
 end
 
 function step!(sys::Pendulum, u)
