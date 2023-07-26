@@ -149,16 +149,15 @@ plot!(preds[1][2:end,T], ribbon=preds[2][2:end,T], color="purple", label="k=$T p
 
 ```julia
 # Length of trial
-N = 300
+N = 150
 tsteps = range(0.0, step=Δt, length=N)
 T = 3
 
 # Set control properties
-m_star = 1.0
-v_star = 1e-4
-goal = NormalMeanVariance(m_star,v_star)
+goal = NormalMeanVariance(1.0, 1e-4)
 control_prior = 1e-2
 num_iters = 10
+u_lims = (-100, 100)
 
 # Initialize beliefs
 pτ = [pτ0]
@@ -200,7 +199,7 @@ FE = zeros(num_iters, N)
     push!(pτ, agent.qτ)
     
     # Optimal control
-    policy = minimizeEFE(agent)
+    policy = minimizeEFE(agent, u_lims=u_lims)
     u_[k+1] = policy[1]
     
     # Store future predictions
