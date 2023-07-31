@@ -141,13 +141,14 @@ function predictions(agent::NARXAgent, controls::Vector; time_horizon=1)
         
         # Prediction
         m_y[t] = dot(μ, ϕ_t)
-        v_y[t] = (ϕ_t'*Σ*ϕ_t + 1)*β/α
+        # v_y[t] = (ϕ_t'*Σ*ϕ_t + 1)*β/α
+        v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y[t])
         
     end
-    return m_y, v_y
+    return [Normal(m_y[t], v_y[t]) for t in 1:time_horizon]
 end
 
 function ambiguity(agent::NARXAgent, ϕ_k)
@@ -196,11 +197,17 @@ function EFE(agent::NARXAgent, controls)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
-        v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
+        # v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
+        v_y = ϕ_k'*Σ*ϕ_k + β/α
         
         # Accumulate EFE
-        J += ambiguity(agent, ϕ_k) + risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
+        # J += ambiguity(agent, ϕ_k) + risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
         # J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
+        if t == agent.thorizon
+            J += risk(agent, Normal(m_y,v_y))
+        else
+            J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]*controls[t+1]
+        end
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
@@ -229,7 +236,13 @@ function MSE(agent::NARXAgent, controls)
         m_y = dot(μ, ϕ_k)
         
         # Accumulate objective function
-        J += (m_star - m_y)^2 + agent.control_prior*controls[t]^2
+        # J += (m_star - m_y)^2 + agent.control_prior*controls[t]^2
+
+        if t == agent.thorizon
+            J += (m_star - m_y)^2
+        else
+            J += (m_star - m_y)^2 + agent.control_prior*controls[t]*controls[t+1]
+        end
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
