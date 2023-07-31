@@ -43,11 +43,11 @@ includet("./ARXsystem.jl"); using .ARXsystem
 
 ```julia
 # Noise
-sys_mnoise_sd = 0.05;
+sys_mnoise_sd = 0.01;
 
 # True coefficients
-M_in = 2
-M_out = 2
+M_in = 1
+M_out = 1
 M = M_in + M_out
 sys_coefficients = [0.0; randn(M)./3]
 ```
@@ -92,8 +92,8 @@ plot!(tsteps, observations, color="black", label="observations")
 H = 1
 
 # Delay order
-Ly = 2
-Lu = 2
+Ly = 1
+Lu = 1
 
 # Model order
 M = size(ϕ(zeros(Ly+Lu), degree=H),1);
@@ -101,7 +101,7 @@ M = size(ϕ(zeros(Ly+Lu), degree=H),1);
 
 ```julia
 # Specify prior distributions
-pτ0 = GammaShapeRate(1e0, 1e0)
+pτ0 = GammaShapeRate(1e1, 1e0)
 pθ0 = MvNormalMeanCovariance(ones(M), 1e3diagm(ones(M)))
 ```
 
@@ -112,30 +112,29 @@ agent = NARXAgent(pθ0, pτ0, memory_actions=Lu, memory_senses=Ly, pol_degree=H)
 ## Parameter estimation
 
 ```julia
+py = []
 qθ = [pθ0]
 qτ = [pτ0]
 FE = zeros(10,N)
 
 T = 1
-preds = (zeros(N,T), zeros(N,T))
-
 @showprogress for k in 1:(N-T)
     
     # Make predictions
-    preds[1][k,:], preds[2][k,:] = predictions(agent, controls[k:k+T], time_horizon=T)
+    push!(py, predictions(agent, controls[k:k+T], time_horizon=T))
     
     # Update beliefs
     NARXAgents.update!(agent, observations[k], controls[k])
-    FE[:,k] = agent.free_energy
-    
     push!(qθ, agent.qθ)
     push!(qτ, agent.qτ)
-
+    
+    # Evaluate
+    FE[:,k] = agent.free_energy
 end
 ```
 
 ```julia
-plot(FE[:], xlabel="updates (time x num_iters)", ylabel="F[q]")
+plot(reshape(FE[:,1:(N-T)], (10*(N-T),)), xlabel="updates (time x num_iters)", ylabel="F[q]")
 ```
 
 ```julia
@@ -157,12 +156,12 @@ plot(pw..., layout=(M,1), size=(600,1200))
 ```
 
 ```julia
-limsb = [minimum(preds[1])*1.2, maximum(preds[1])*1.2]
+limsb = [minimum(observations)*1.2, maximum(observations)*1.2]
 K = 1
 
 p1 = plot(xlabel="time [steps]", title="Observations vs $K-step ahead predictions", ylims=limsb)
-scatter!(observations[2:end], color="black", label="observations")
-plot!(preds[1][2:end,K], ribbon=preds[2][2:end,K], color="purple", label="k=$K prediction")
+scatter!(observations, color="black", label="observations")
+plot!([mean(py[k][K]) for k in 1:(N-T)], ribbon=[var(py[k][K]) for k in 1:(N-T)], color="purple", label="k=$K prediction")
 ```
 
 ## Experiments
@@ -174,15 +173,15 @@ tsteps = range(0.0, step=Δt, length=N)
 T = 10
 
 # Set control properties
-goal = NormalMeanVariance(1.0, 1e-2)
-control_prior = 0.0
+goal = NormalMeanVariance(1.0, 1e-3)
+control_prior = 0.01
 num_iters = 10
-u_lims = (-15, 15)
+u_lims = (-10, 10)
 tlimit = 300
 
 # Specify prior distributions
 pτ0 = GammaShapeRate(1e0, 1e0)
-pθ0 = MvNormalMeanCovariance(ones(M), 1e3diagm(ones(M)))
+pθ0 = MvNormalMeanCovariance(ones(M), 1e1diagm(ones(M)))
 ```
 
 ### Mean Squared Error minimization
@@ -193,12 +192,6 @@ system = ARXsys(sys_coefficients,
                 sys_mnoise_sd, 
                 order_outputs=M_out, 
                 order_inputs=M_in)
-```
-
-```julia
-# Initialize beliefs
-pτ_MSE = [pτ0]
-pθ_MSE = [pθ0]
 
 # Start agent
 agent = NARXAgent(pθ0, pτ0, 
@@ -213,9 +206,9 @@ agent = NARXAgent(pθ0, pτ0,
 # Preallocate
 y_MSE = zeros(N)
 u_MSE = zeros(N+1)
-
-pred_m = zeros(N,T)
-pred_v = zeros(N,T)
+pτ_MSE = [pτ0]
+pθ_MSE = [pθ0]
+py_MSE = []
 FE_MSE = zeros(num_iters, N)
 
 @showprogress for k in 1:N
@@ -232,11 +225,11 @@ FE_MSE = zeros(num_iters, N)
     push!(pτ_MSE, agent.qτ)
     
     # Optimal control
-    policy = minimizeMSE(agent)
+    policy = minimizeMSE(agent, time_limit=tlimit, control_lims=u_lims)
     u_MSE[k+1] = policy[1]
     
     # Store future predictions
-    pred_m[k,:], pred_v[k,:] = predictions(agent, policy, time_horizon=T)
+    push!(py_MSE, predictions(agent, policy, time_horizon=T))
     
 end
 ```
@@ -264,27 +257,21 @@ plot(dSθ_MSE, title="|Σ| = $final_dSθ_MSE", yscale=:log10)
 ```
 
 ```julia
-K = 10
-sum_vy_k = sum(pred_v[:,K])
-plot(pred_v[:,K], title="Sum V[y_t+$K] = $sum_vy_k", yscale=:log10)
-```
-
-```julia
 limsb = [minimum(y_MSE)*1.5, maximum(y_MSE)*1.5]
 
 window = 20
 
-anim = @animate for k in 2:2:(N-T-1)
+anim = @animate for k in 2:(N-T-1)
     
     if k <= window
         plot(tsteps[1:k], y_MSE[1:k], color="blue", xlims=(tsteps[1], tsteps[window+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
         plot!(tsteps[k:k+T], y_MSE[k:k+T], color="purple", label="true future", linestyle=:dot)
-        plot!(tsteps[k+1:k+T], pred_m[k,:], ribbon=pred_v[k,:], label="predicted future", color="orange", legend=:topleft)
+        plot!(tsteps[k+1:k+T], mean.(py_MSE[k]), ribbon=var.(py_MSE[k]), label="predicted future", color="orange", legend=:topleft)
         hline!([mean(goal)], color="green")
     else
         plot(tsteps[k-window:k], y_MSE[k-window:k], color="blue", xlims=(tsteps[k-window], tsteps[k+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
         plot!(tsteps[k:k+T], y_MSE[k:k+T], color="purple", label="true future", linestyle=:dot)
-        plot!(tsteps[k+1:k+T], pred_m[k,:], ribbon=pred_v[k,:], label="prediction", color="orange", legend=:topleft)
+        plot!(tsteps[k+1:k+T], mean.(py_MSE[k]), ribbon=var.(py_MSE[k]), label="prediction", color="orange", legend=:topleft)
         hline!([mean(goal)], color="green")
     end
     
@@ -300,12 +287,6 @@ system = ARXsys(sys_coefficients,
                 sys_mnoise_sd, 
                 order_outputs=M_out, 
                 order_inputs=M_in)
-```
-
-```julia
-# Initialize beliefs
-pτ_EFE = [pτ0]
-pθ_EFE = [pθ0]
 
 # Start agent
 agent = NARXAgent(pθ0, pτ0, 
@@ -320,9 +301,9 @@ agent = NARXAgent(pθ0, pτ0,
 # Preallocate
 y_EFE = zeros(N)
 u_EFE = zeros(N+1)
-
-pred_m = zeros(N,T)
-pred_v = zeros(N,T)
+pτ_EFE = [pτ0]
+pθ_EFE = [pθ0]
+py_EFE = []
 FE_EFE = zeros(num_iters, N)
 
 @showprogress for k in 1:N
@@ -339,11 +320,11 @@ FE_EFE = zeros(num_iters, N)
     push!(pτ_EFE, agent.qτ)
     
     # Optimal control
-    policy = minimizeEFE(agent)
+    policy = minimizeEFE(agent, time_limit=tlimit, control_lims=u_lims)
     u_EFE[k+1] = policy[1]
     
     # Store future predictions
-    pred_m[k,:], pred_v[k,:] = predictions(agent, policy, time_horizon=T)
+    push!(py_EFE, predictions(agent, policy, time_horizon=T))
     
 end
 ```
@@ -371,32 +352,26 @@ plot(dSθ_EFE, title="|Σ| = $final_dSθ_EFE", yscale=:log10)
 ```
 
 ```julia
-K = 10
-sum_vy_k = sum(pred_v[:,K])
-plot(pred_v[:,K], title="Sum V[y_t+$K] = $sum_vy_k", yscale=:log10)
-```
-
-```julia
 limsb = [minimum(y_EFE)*1.5, maximum(y_EFE)*1.5]
 
 window = 20
 
-anim = @animate for k in 2:2:(N-T-1)
+anim = @animate for k in 2:(N-T-1)
     
     if k <= window
         plot(tsteps[1:k], y_EFE[1:k], color="blue", xlims=(tsteps[1], tsteps[window+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
         plot!(tsteps[k:k+T], y_EFE[k:k+T], color="purple", label="true future", linestyle=:dot)
-        plot!(tsteps[k+1:k+T], pred_m[k,:], ribbon=pred_v[k,:], label="predicted future", color="orange", legend=:topleft)
+        plot!(tsteps[k+1:k+T], mean.(py_EFE[k]), ribbon=var.(py_EFE[k]), label="predicted future", color="orange", legend=:topleft)
         hline!([mean(goal)], color="green")
     else
         plot(tsteps[k-window:k], y_EFE[k-window:k], color="blue", xlims=(tsteps[k-window], tsteps[k+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
         plot!(tsteps[k:k+T], y_EFE[k:k+T], color="purple", label="true future", linestyle=:dot)
-        plot!(tsteps[k+1:k+T], pred_m[k,:], ribbon=pred_v[k,:], label="prediction", color="orange", legend=:topleft)
+        plot!(tsteps[k+1:k+T], mean.(py_EFE[k]), ribbon=var.(py_EFE[k]), label="prediction", color="orange", legend=:topleft)
         hline!([mean(goal)], color="green")
     end
     
 end
-gif(anim, "figures/NARX-EFE-verification-plan_trial00.gif", fps=24)
+gif(anim, "figures/NARX-EFE-verification-planning.gif", fps=24)
 ```
 
 ### Comparison
@@ -407,12 +382,24 @@ println("Final |Σ| EFE = $final_dSθ_EFE")
 ```
 
 ```julia
-idθ_MSE = [-logpdf(pθ_MSE[k], sys_coefficients) for k in 1:N]
-idθ_EFE = [-logpdf(pθ_EFE[k], sys_coefficients) for k in 1:N]
+sF_MSE = round(sum(FE_MSE[:]), digits=2)
+sF_EFE = round(sum(FE_EFE[:]), digits=2)
 
-plot(xlabel="time (steps)", ylabel="-logpdf θ*", size=(900,400))
-plot!(idθ_MSE, label="MSE")
-plot!(idθ_EFE, label="EFE")
+plot(xlabel="updates (time x iterations)", ylabel="F[q]", size=(900,400))
+plot!(FE_MSE[:], label="MSE, total=$sF_MSE")
+plot!(FE_EFE[:], label="EFE, total=$sF_EFE")
+```
+
+```julia
+evidence_MSE = [-logpdf(py_MSE[k][1], y_MSE[k+1]) for k in 1:(N-1)]
+evidence_EFE = [-logpdf(py_EFE[k][1], y_EFE[k+1]) for k in 1:(N-1)]
+
+total_evidence_MSE = round(sum(evidence_MSE), digits=2)
+total_evidence_EFE = round(sum(evidence_EFE), digits=2)
+
+plot(xlabel="time (steps)", ylabel="-logp(y)", size=(900,400))
+plot!(evidence_MSE, label="MSE, total=$total_evidence_MSE")
+plot!(evidence_EFE, label="EFE, total=$total_evidence_EFE")
 ```
 
 ```julia
@@ -431,6 +418,18 @@ CC_EFE = round(sum(abs.(u_EFE)), digits=2)
 plot(xlabel="time (steps)", ylabel="control", size=(900,400))
 plot!(u_MSE, label="Total cost for MSE = $CC_MSE")
 plot!(u_EFE, label="Total cost for EFE = $CC_EFE")
+```
+
+```julia
+J_MSE = [norm(y_MSE[k] - mean(goal),2) for k in 1:N]
+J_EFE = [norm(y_EFE[k] - mean(goal),2) for k in 1:N]
+
+sJ_MSE = norm(y_MSE .- mean(goal),2)
+sJ_EFE = norm(y_EFE .- mean(goal),2)
+
+plot(xlabel="time (steps)", ylabel="||yₖ - m*||", size=(900,400))
+plot!(J_MSE, label="MSE total=$sJ_MSE")
+plot!(J_EFE, label="EFE total=$sJ_EFE")
 ```
 
 ```julia
