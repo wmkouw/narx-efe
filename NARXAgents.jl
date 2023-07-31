@@ -119,7 +119,7 @@ function update!(agent::NARXAgent, observation::Float64, control::Float64)
     agent.ybuffer = backshift(agent.ybuffer, observation)
 end
 
-function predictions(agent::NARXAgent, controls; time_horizon=1)
+function predictions(agent::NARXAgent, controls::Vector; time_horizon=1)
     
     m_y = zeros(time_horizon)
     v_y = zeros(time_horizon)

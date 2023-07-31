@@ -90,26 +90,6 @@ plot!(tsteps, controls[:], color="red")
 plot(p1,p2, layout=grid(2,1, heights=[0.7, 0.3]), size=(900,600))
 ```
 
-## NARX model
-
-```julia
-# Polynomial degree
-H = 1
-
-# Delay order
-Ly = 3
-Lu = 3
-
-# Model order
-M = size(ϕ(zeros(Ly+Lu), degree=H),1);
-```
-
-```julia
-# Specify prior distributions
-pτ0 = GammaShapeRate(1e0, 1e-1)
-pθ0 = MvNormalMeanCovariance(ones(M), 10diagm(ones(M)))
-```
-
 ## Experiments
 
 ```julia
@@ -122,8 +102,22 @@ T = 20
 goal = NormalMeanVariance(3.14, 1e-4)
 control_prior = 1e-4
 num_iters = 10
-u_lims = (-30, 30)
+u_lims = (-50, 50)
 tlimit = 300
+
+# Polynomial degree
+H = 1
+
+# Delay order
+Ly = 3
+Lu = 3
+
+# Model order
+M = size(ϕ(zeros(Ly+Lu), degree=H),1);
+
+# Specify prior distributions
+pτ0 = GammaShapeRate(1e0, 1e-1)
+pθ0 = MvNormalMeanCovariance(ones(M), 10diagm(ones(M)))
 
 init_state = [0.0, 0.0];
 ```
@@ -218,7 +212,7 @@ plot(pred_v[:,K], title="Sum V[y_t+$K] = $sum_vy_k")
 ```
 
 ```julia
-limsb = [minimum(y_)*1.5, maximum(y_)*1.5]
+limsb = [minimum(y_MSE)*1.5, maximum(y_MSE)*1.5]
 
 window = 20
 
@@ -346,10 +340,6 @@ anim = @animate for k in 2:2:(N-T-1)
     
 end
 gif(anim, "figures/NARX-EFE-1Pendulum-planning.gif", fps=24)
-```
-
-```julia
-
 ```
 
 ### Comparisons
