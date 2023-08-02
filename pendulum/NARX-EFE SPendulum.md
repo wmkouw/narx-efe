@@ -173,7 +173,6 @@ policy = zeros(T)
     push!(pτ, agent.qτ)
     
     # Optimal control
-#     policy = minimizeMSE(agent, u_0=policy, time_limit=tlimit, control_lims=u_lims)
     policy = minimizeMSE(agent, time_limit=tlimit, control_lims=u_lims)
     u_MSE[k+1] = policy[1]
     

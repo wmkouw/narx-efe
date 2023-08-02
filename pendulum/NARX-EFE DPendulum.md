@@ -152,17 +152,16 @@ agent = NARXAgent(pθ0, pτ0, memory_actions=Lu, memory_senses=Ly, pol_degree=H)
 ## Parameter estimation
 
 ```julia
+py = []
 qθ = [pθ0]
 qτ = [pτ0]
 FE = zeros(10,N)
 
 T = 1
-preds = (zeros(N,T), zeros(N,T))
-
 @showprogress for k in 1:N
     
     # Make predictions
-    preds[1][k,:], preds[2][k,:] = predictions(agent, controls[2,k], time_horizon=T)
+    push!(py, predictions(agent, [controls[2,k]], time_horizon=T))
     
     # Update beliefs
     NARXAgents.update!(agent, observations[2,k], controls[2,k])
@@ -180,9 +179,11 @@ plot(FE[:], ylabel="F[q]")
 
 ```julia
 limsb = [minimum(observations[:])*1.5, maximum(observations[:])*1.5]
+K = 1
+
 p1 = plot(xlabel="time [steps]", title="Observations vs $T-step ahead predictions", ylims=limsb)
+plot!([mean(py[k][K]) for k in 1:(N-T)], ribbon=[var(py[k][K]) for k in 1:(N-T)], color="purple", label="k=$K prediction")
 scatter!(observations[2,2:end], color="black", label="observations")
-plot!(preds[1][2:end,T], ribbon=preds[2][2:end,T], color="purple", label="k=$T prediction")
 ```
 
 ## Expected Free Energy minimization
@@ -244,7 +245,7 @@ FE = zeros(num_iters, N)
     push!(pτ, agent.qτ)
     
     # Optimal control
-    policy = minimizeEFE(agent, u_lims=u_lims)
+    policy = minimizeEFE(agent, time_limit=tlimit, control_lims=u_lims)
     u_[k+1] = policy[1]
     
     # Store future predictions
