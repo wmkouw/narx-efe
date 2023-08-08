@@ -14,14 +14,16 @@ mutable struct NARXsys
     coefficients   ::Vector{Float64}
     observation    ::Float64
     mnoise_sd      ::Float64 # Measurement noise standard deviation
+    input_lims     ::Tuple{Float64,Float64}
 
     function NARXsys(coefficients::Vector{Float64}, 
                      basis_function::Function, 
                      mnoise_sd::Float64; 
-                     order_inputs::Integer=1, 
-                     order_outputs::Integer=1)
+                     order_inputs::Integer = 1, 
+                     order_outputs::Integer = 1,
+                     input_lims::Tuple{Float64,Float64} = (-Inf, Inf))
 
-        input_buffer  = zeros(order_inputs)
+        input_buffer  = zeros(1+order_inputs)
         output_buffer = zeros(order_outputs)
         init_observation = 0.0
 
@@ -32,7 +34,8 @@ mutable struct NARXsys
                    basis_function,
                    coefficients,
                    init_observation,
-                   mnoise_sd)
+                   mnoise_sd,
+                   input_lims)
     end
 end
 
@@ -42,10 +45,11 @@ function update!(sys::NARXsys, input::Float64)
     sys.output_buffer = backshift(sys.output_buffer, sys.observation)
 
     # Update input buffer
-    sys.input_buffer = backshift(sys.input_buffer, input)
+    clamped_input = clamp.(input, sys.input_lims...)
+    sys.input_buffer = backshift(sys.input_buffer, clamped_input)
 
     # Generate new observation
-    ϕ = sys.basis_function([1.0; sys.output_buffer; sys.input_buffer])
+    ϕ = sys.basis_function([sys.output_buffer; sys.input_buffer])
     sys.observation  = dot(sys.coefficients, ϕ) + sys.mnoise_sd*randn()    
     
 end
