@@ -28,8 +28,8 @@ mutable struct NARXAgent
     num_iters       ::Integer
     control_prior   ::Float64
 
-    memory_actions  ::Integer
-    memory_senses   ::Integer
+    delay_in        ::Integer
+    delay_out       ::Integer
     pol_degree      ::Integer
     order           ::Integer
 
@@ -39,8 +39,8 @@ mutable struct NARXAgent
     function NARXAgent(prior_coefficients, 
                        prior_precision; 
                        goal_prior=NormalMeanVariance(0.0, 1.0),
-                       memory_actions::Integer=1, 
-                       memory_senses::Integer=1, 
+                       delay_in::Integer=1, 
+                       delay_out::Integer=1, 
                        pol_degree::Integer=1,
                        thorizon::Integer=1,
                        num_iters::Integer=10,
@@ -53,10 +53,10 @@ mutable struct NARXAgent
         end
 
         free_energy = [Inf]
-        ybuffer = zeros(memory_senses)
-        ubuffer = zeros(memory_actions)
+        ybuffer = zeros(delay_out)
+        ubuffer = zeros(1+delay_in)
 
-        order = size(ϕ(zeros(memory_actions+memory_senses), degree=pol_degree),1)
+        order = size(ϕ(zeros(1+delay_in+delay_out), degree=pol_degree),1)
         if order != length(prior_coefficients) 
             error("Dimensionality of coefficients prior and model order do not match.")
         end
@@ -70,8 +70,8 @@ mutable struct NARXAgent
                    thorizon,
                    num_iters,
                    control_prior,
-                   memory_actions,
-                   memory_senses,
+                   delay_in,
+                   delay_out,
                    pol_degree,
                    order,
                    ybuffer,
@@ -141,8 +141,8 @@ function predictions(agent::NARXAgent, controls::Vector; time_horizon=1)
         
         # Prediction
         m_y[t] = dot(μ, ϕ_t)
-        # v_y[t] = (ϕ_t'*Σ*ϕ_t + 1)*β/α
-        v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
+        v_y[t] = (ϕ_t'*Σ*ϕ_t + 1)*β/α
+        # v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y[t])
@@ -197,8 +197,8 @@ function EFE(agent::NARXAgent, controls)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
-        # v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
-        v_y = ϕ_k'*Σ*ϕ_k + β/α
+        v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
+        # v_y = ϕ_k'*Σ*ϕ_k + β/α
         
         # Accumulate EFE
         # J += ambiguity(agent, ϕ_k) + risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
