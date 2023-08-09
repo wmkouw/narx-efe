@@ -2,7 +2,7 @@ module Pendulums
 
 using LinearAlgebra
 
-export SPendulum, DPendulum, params, dzdt, RK4, update!, emit!, step!
+export SPendulum, DPendulum, params, dzdt, RK4, update!, emit!, step!, sim_trajectory
 
 abstract type Pendulum end
 
@@ -122,6 +122,21 @@ end
 function step!(sys::Pendulum, u)
     update!(sys, u)
     emit!(sys)
-end         
+end
+
+function sim_trajectory(sys::Pendulum, policy)
+    "Simulate trajectory of pendulum for a given policy"
+
+    time_horizon = length(policy)
+    state_dim = length(sys.state)
+    
+    trajectory = zeros(state_dim, time_horizon)
+    state_tmin1 = sys.state
+    for t in 1:time_horizon
+        trajectory[:,t] = state_tmin1 + sys.Δt*dzdt(sys, policy[t], Δstate=state_tmin1-sys.state)
+        state_tmin1 = trajectory[:,t]
+    end
+    return trajectory
+end
 
 end

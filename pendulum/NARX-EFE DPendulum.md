@@ -106,10 +106,6 @@ end
 ```
 
 ```julia
-observations
-```
-
-```julia
 p101 = plot(ylabel="θ₁")
 plot!(tsteps, states[1,:], color="blue", label="state")
 scatter!(tsteps, observations[1,:], color="black", label="measurements")
@@ -186,7 +182,104 @@ plot!([mean(py[k][K]) for k in 1:(N-T)], ribbon=[var(py[k][K]) for k in 1:(N-T)]
 scatter!(observations[2,2:end], color="black", label="observations")
 ```
 
-## Expected Free Energy minimization
+## Control experiments
+
+```julia
+# Length of trial
+N = 150
+tsteps = range(0.0, step=Δt, length=N)
+T = 3
+
+# Set control properties
+goal1 = NormalMeanVariance(3.14, 1e-4)
+goal2 = NormalMeanVariance(3.14, 1e-4)
+control_prior = 1e-2
+num_iters = 10
+u_lims = (-100, 100)
+
+# Polynomial degree
+H = 1
+
+# Delay order
+Ly = 3
+Lu = 3
+
+# Model order
+M = size(ϕ(zeros(Ly+Lu), degree=H),1);
+
+# Specify prior distributions
+pτ0 = GammaShapeRate(1e0, 1e-1)
+pθ0 = MvNormalMeanCovariance(ones(M), 10diagm(ones(M)))
+
+init_state = [0.0, 0.0];
+```
+
+### Mean Squared Error
+
+```julia
+# Initialize beliefs
+pτ = [pτ0]
+pθ = [pθ0]
+
+# Start system
+init_state = [0.0, 0.0, 0.0, 0.0]
+pendulum = DPendulum(init_state = init_state, 
+                     mass = sys_mass, 
+                     length = sys_length, 
+                     damping = sys_damping, 
+                     mnoise_S = sys_mnoise_S, 
+                     Δt=Δt)
+
+# Start agents
+agent1 = NARXAgent(pθ0, pτ0, 
+                   goal_prior=goal1, 
+                   memory_actions=Lu, 
+                   memory_senses=Ly, 
+                   pol_degree=H,
+                   thorizon=T,
+                   control_prior=control_prior,
+                   num_iters=num_iters)
+agent2 = NARXAgent(pθ0, pτ0, 
+                   goal_prior=goal1, 
+                   memory_actions=Lu, 
+                   memory_senses=Ly, 
+                   pol_degree=H,
+                   thorizon=T,
+                   control_prior=control_prior,
+                   num_iters=num_iters)
+
+# Preallocate
+y_ = zeros(N)
+u_ = zeros(N+1)
+
+pred_m = zeros(N,T)
+pred_v = zeros(N,T)
+FE = zeros(num_iters, N)
+
+@showprogress for k in 1:N
+    
+    # Act upon environment
+    step!(pendulum, [0.0; u_[k]])
+    y_[k] = pendulum.sensor[2]
+    
+    # Update parameter beliefs
+    NARXAgents.update!(agent, y_[k], u_[k])
+    
+    FE[:,k] = agent.free_energy
+    push!(pθ, agent.qθ)
+    push!(pτ, agent.qτ)
+    
+    # Optimal control
+    policy = minimizeEFE(agent, time_limit=tlimit, control_lims=u_lims)
+    u_[k+1] = policy[1]
+    
+    # Store future predictions
+    pred_m[k,:], pred_v[k,:] = predictions(agent, policy, time_horizon=T)
+    
+end
+```
+
+### Expected Free Energy minimization
 
 ```julia
 # Length of trial

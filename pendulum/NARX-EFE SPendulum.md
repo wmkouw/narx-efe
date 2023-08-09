@@ -45,13 +45,13 @@ includet("./Pendulums.jl"); using .Pendulums
 # System parameters
 sys_mass = 2.0
 sys_length = 0.5
-sys_damping = 0.1
+sys_damping = 0.05
 sys_mnoise_sd = 1e-2
 ```
 
 ```julia
 N = 300
-Δt = 0.1
+Δt = 0.2
 tsteps = range(0.0, step=Δt, length=N)
 ```
 
@@ -59,8 +59,10 @@ tsteps = range(0.0, step=Δt, length=N)
 # Inputs
 A  = rand(10)*200 .- 100
 Ω  = rand(10)*3
-controls = mean([A[i]*sin.(Ω[i].*tsteps) for i = 1:10]) ./ 10;
+controls = clamp.(mean([A[i]*sin.(Ω[i].*tsteps) for i = 1:10]) ./ 5, -10., 10.);
 ```
+
+### Test system
 
 ```julia
 init_state = [π/2, 0.0]
@@ -94,143 +96,32 @@ plot(p1,p2, layout=grid(2,1, heights=[0.7, 0.3]), size=(900,600))
 
 ```julia
 # Length of trial
-N = 200
+N = 50
 tsteps = range(0.0, step=Δt, length=N)
-T = 20
+T = 10
 
 # Set control properties
-goal = NormalMeanVariance(3.14, 1e-4)
-control_prior = 1e-4
-num_iters = 10
-u_lims = (-50, 50)
+goal = NormalMeanVariance(3.14, 1e-2)
+control_prior = 0.0
+num_iters = 4
+u_lims = (-20, 20)
 tlimit = 300
 
 # Polynomial degree
 H = 1
 
 # Delay order
-Ly = 3
-Lu = 3
+Ly = 2
+Lu = 2
 
 # Model order
 M = size(ϕ(zeros(Ly+Lu), degree=H),1);
 
 # Specify prior distributions
-pτ0 = GammaShapeRate(1e0, 1e-1)
-pθ0 = MvNormalMeanCovariance(ones(M), 10diagm(ones(M)))
+pτ0 = GammaShapeRate(1e2, 1e0)
+pθ0 = MvNormalMeanCovariance(randn(M)./100, 10diagm(ones(M)))
 
 init_state = [0.0, 0.0];
-```
-
-### Mean Squared Error minimization
-
-```julia
-# Start system
-pendulum = SPendulum(init_state = init_state, 
-                     mass = sys_mass, 
-                     length = sys_length, 
-                     damping = sys_damping, 
-                     mnoise_sd = sys_mnoise_sd, 
-                     Δt=Δt)
-```
-
-```julia
-# Initialize beliefs
-pτ = [pτ0]
-pθ = [pθ0]
-
-# Start agent
-agent = NARXAgent(pθ0, pτ0, 
-                  goal_prior=goal, 
-                  memory_actions=Lu, 
-                  memory_senses=Ly, 
-                  pol_degree=H,
-                  thorizon=T,
-                  control_prior=control_prior,
-                  num_iters=num_iters)
-
-# Preallocate
-y_MSE = zeros(N)
-u_MSE = zeros(N+1)
-
-pred_m = zeros(N,T)
-pred_v = zeros(N,T)
-FE = zeros(num_iters, N)
-
-policy = zeros(T)
-
-@showprogress for k in 1:N
-    
-    # Act upon environment
-    step!(pendulum, u_MSE[k])
-    y_MSE[k] = pendulum.sensor
-    
-    # Update parameter beliefs
-    NARXAgents.update!(agent, y_MSE[k], u_MSE[k])
-    
-    FE[:,k] = agent.free_energy
-    push!(pθ, agent.qθ)
-    push!(pτ, agent.qτ)
-    
-    # Optimal control
-    policy = minimizeMSE(agent, time_limit=tlimit, control_lims=u_lims)
-    u_MSE[k+1] = policy[1]
-    
-    # Store future predictions
-    pred_m[k,:], pred_v[k,:] = predictions(agent, policy, time_horizon=T)
-    
-end
-```
-
-```julia
-plot(FE[:])
-```
-
-```julia
-p1 = plot(tsteps, y_MSE, color="black", label="observations")
-hline!([mean(goal)], color="green", label="goal")
-p4 = plot(tsteps, u_MSE[1:end-1], color="red", ylabel="controls", xlabel="time [s]")
-
-plot(p1,p4, layout=grid(2,1, heights=[.7, .3]), size=(900,400))
-```
-
-```julia
-savefig("figures/NARX-MSE-1Pendulum-trial.png")
-```
-
-```julia
-final_Sθ = det(cov(pθ[end]))
-tSθ = [det(cov(pθ[k])) for k in 1:N]
-plot(tSθ, title="|Σ| = $final_Sθ", yscale=:log10)
-```
-
-```julia
-K = 10
-sum_vy_k = sum(pred_v[:,K])
-plot(pred_v[:,K], title="Sum V[y_t+$K] = $sum_vy_k")
-```
-
-```julia
-limsb = [minimum(y_MSE)*1.5, maximum(y_MSE)*1.5]
-
-window = 20
-
-anim = @animate for k in 2:2:(N-T-1)
-    
-    if k <= window
-        plot(tsteps[1:k], y_MSE[1:k], color="blue", xlims=(tsteps[1], tsteps[window+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
-        plot!(tsteps[k:k+T], y_MSE[k:k+T], color="purple", label="true future", linestyle=:dot)
-        plot!(tsteps[k+1:k+T], pred_m[k,:], ribbon=pred_v[k,:], label="predicted future", color="orange", legend=:topleft)
-        hline!([mean(goal)], color="green")
-    else
-        plot(tsteps[k-window:k], y_MSE[k-window:k], color="blue", xlims=(tsteps[k-window], tsteps[k+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
-        plot!(tsteps[k:k+T], y_MSE[k:k+T], color="purple", label="true future", linestyle=:dot)
-        plot!(tsteps[k+1:k+T], pred_m[k,:], ribbon=pred_v[k,:], label="prediction", color="orange", legend=:topleft)
-        hline!([mean(goal)], color="green")
-    end
-    
-end
-gif(anim, "figures/NARX-MSE-1Pendulum-planning.gif", fps=24)
 ```
 
 ### Expected Free Energy minimization
@@ -243,12 +134,11 @@ pendulum = SPendulum(init_state = init_state,
                      damping = sys_damping, 
                      mnoise_sd = sys_mnoise_sd, 
                      Δt=Δt)
-```
 
-```julia
-# Initialize beliefs
-pτ = [pτ0]
-pθ = [pθ0]
+# Track beliefs
+py_EFE = []
+pτ_EFE = [pτ0]
+pθ_EFE = [pθ0]
 
 # Start agent
 agent = NARXAgent(pθ0, pτ0, 
@@ -263,11 +153,7 @@ agent = NARXAgent(pθ0, pτ0,
 # Preallocate
 y_EFE = zeros(N)
 u_EFE = zeros(N+1)
-
-pred_m = zeros(N,T)
-pred_v = zeros(N,T)
-FE = zeros(num_iters, N)
-
+FE_EFE = zeros(num_iters, N)
 policy = zeros(T)
 
 @showprogress for k in 1:N
@@ -279,9 +165,9 @@ policy = zeros(T)
     # Update parameter beliefs
     NARXAgents.update!(agent, y_EFE[k], u_EFE[k])
     
-    FE[:,k] = agent.free_energy
-    push!(pθ, agent.qθ)
-    push!(pτ, agent.qτ)
+    FE_EFE[:,k] = agent.free_energy
+    push!(pθ_EFE, agent.qθ)
+    push!(pτ_EFE, agent.qτ)
     
     # Optimal control
 #     policy = minimizeEFE(agent, u_0=policy, time_limit=tlimit, control_lims=u_lims)
@@ -289,7 +175,7 @@ policy = zeros(T)
     u_EFE[k+1] = policy[1]
     
     # Store future predictions
-    pred_m[k,:], pred_v[k,:] = predictions(agent, policy, time_horizon=T)
+    push!(py_EFE, predictions(agent, policy, time_horizon=T))
     
 end
 ```
@@ -307,41 +193,165 @@ savefig("figures/NARX-EFE-1Pendulum-trial.png")
 ```
 
 ```julia
-final_Sθ = det(cov(pθ[end]))
-tSθ = [det(cov(pθ[k])) for k in 1:N]
-plot(tSθ, title="|Σ| = $final_Sθ", yscale=:log10)
-```
-
-```julia
-K = 10
-sum_vy_k = sum(pred_v[:,K])
-plot(pred_v[:,K], title="Sum V[y_t+$K] = $sum_vy_k")
+dSθ_EFE = [det(cov(pθ_EFE[k])) for k in 1:N]
+final_dSθ_EFE = dSθ_EFE[end]
+plot(dSθ_EFE, title="|Σ| = $final_dSθ_EFE", yscale=:log10)
 ```
 
 ```julia
 limsb = [minimum(y_EFE)*1.5, maximum(y_EFE)*1.5]
 
-window = 20
+window = T+5
 
 anim = @animate for k in 2:2:(N-T-1)
     
     if k <= window
         plot(tsteps[1:k], y_EFE[1:k], color="blue", xlims=(tsteps[1], tsteps[window+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
         plot!(tsteps[k:k+T], y_EFE[k:k+T], color="purple", label="true future", linestyle=:dot)
-        plot!(tsteps[k+1:k+T], pred_m[k,:], ribbon=pred_v[k,:], label="predicted future", color="orange", legend=:topleft)
+        plot!(tsteps[k+1:k+T], mean.(py_EFE[k]), ribbon=var.(py_EFE[k]), label="predicted future", color="orange", legend=:topleft)
         hline!([mean(goal)], color="green")
     else
         plot(tsteps[k-window:k], y_EFE[k-window:k], color="blue", xlims=(tsteps[k-window], tsteps[k+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
         plot!(tsteps[k:k+T], y_EFE[k:k+T], color="purple", label="true future", linestyle=:dot)
-        plot!(tsteps[k+1:k+T], pred_m[k,:], ribbon=pred_v[k,:], label="prediction", color="orange", legend=:topleft)
+        plot!(tsteps[k+1:k+T], mean.(py_EFE[k]), ribbon=var.(py_EFE[k]), label="prediction", color="orange", legend=:topleft)
         hline!([mean(goal)], color="green")
     end
     
 end
-gif(anim, "figures/NARX-EFE-1Pendulum-planning.gif", fps=24)
+gif(anim, "figures/NARX-EFE-1Pendulum-planning.gif", fps=10)
+```
+
+### Mean Squared Error minimization
+
+```julia
+# Start system
+pendulum = SPendulum(init_state = init_state, 
+                     mass = sys_mass, 
+                     length = sys_length, 
+                     damping = sys_damping, 
+                     mnoise_sd = sys_mnoise_sd, 
+                     Δt=Δt)
+
+# Track beliefs
+py_MSE = [] 
+pτ_MSE = [pτ0]
+pθ_MSE = [pθ0]
+
+# Start agent
+agent = NARXAgent(pθ0, pτ0, 
+                  goal_prior=goal, 
+                  memory_actions=Lu, 
+                  memory_senses=Ly, 
+                  pol_degree=H,
+                  thorizon=T,
+                  control_prior=control_prior,
+                  num_iters=num_iters)
+
+# Preallocate
+y_MSE = zeros(N)
+u_MSE = zeros(N+1)
+FE_MSE = zeros(num_iters, N)
+policy = zeros(T)
+
+@showprogress for k in 1:N
+    
+    # Act upon environment
+    step!(pendulum, u_MSE[k])
+    y_MSE[k] = pendulum.sensor
+    
+    # Update parameter beliefs
+    NARXAgents.update!(agent, y_MSE[k], u_MSE[k])
+    
+    FE_MSE[:,k] = agent.free_energy
+    push!(pθ_MSE, agent.qθ)
+    push!(pτ_MSE, agent.qτ)
+    
+    # Optimal control
+    policy = minimizeMSE(agent, time_limit=tlimit, control_lims=u_lims)
+    u_MSE[k+1] = policy[1]
+    
+    # Store future predictions
+    push!(py_MSE, predictions(agent, policy, time_horizon=T))
+    
+end
+```
+
+```julia
+plot(FE_MSE[:], xlabel="updates (time x num_iters)", ylabel="F[q]")
+```
+
+```julia
+FE_MSE
+```
+
+```julia
+p1 = plot(tsteps, y_MSE, color="black", label="observations")
+hline!([mean(goal)], color="green", label="goal")
+p4 = plot(tsteps, u_MSE[1:end-1], color="red", ylabel="controls", xlabel="time [s]")
+
+plot(p1,p4, layout=grid(2,1, heights=[.7, .3]), size=(900,400))
+```
+
+```julia
+savefig("figures/NARX-MSE-1Pendulum-trial.png")
+```
+
+```julia
+dSθ_MSE = [det(cov(pθ_MSE[k])) for k in 1:N]
+final_dSθ_MSE = dSθ_MSE[end]
+plot(dSθ_MSE, title="|Σ| = $final_dSθ_MSE", yscale=:log10)
+```
+
+```julia
+limsb = [minimum(y_MSE)*1.5, maximum(y_MSE)*1.5]
+
+window = 20
+
+anim = @animate for k in 2:2:(N-T-1)
+    
+    if k <= window
+        plot(tsteps[1:k], y_MSE[1:k], color="blue", xlims=(tsteps[1], tsteps[window+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
+        plot!(tsteps[k:k+T], y_MSE[k:k+T], color="purple", label="true future", linestyle=:dot)
+        plot!(tsteps[k+1:k+T], mean.(py_MSE[k]), ribbon=var.(py_MSE[k]), label="predicted future", color="orange", legend=:topleft)
+        hline!([mean(goal)], color="green")
+    else
+        plot(tsteps[k-window:k], y_MSE[k-window:k], color="blue", xlims=(tsteps[k-window], tsteps[k+T+1]+0.5), label="past data", xlabel="time (sec)", ylims=limsb, size=(900,300))
+        plot!(tsteps[k:k+T], y_MSE[k:k+T], color="purple", label="true future", linestyle=:dot)
+        plot!(tsteps[k+1:k+T], mean.(py_MSE[k]), ribbon=var.(py_MSE[k]), label="prediction", color="orange", legend=:topleft)
+        hline!([mean(goal)], color="green")
+    end
+    
+end
+gif(anim, "figures/NARX-MSE-1Pendulum-planning.gif", fps=10)
 ```
 
 ### Comparisons
+
+```julia
+println("Final |Σ| MSE = $final_dSθ_MSE")
+println("Final |Σ| EFE = $final_dSθ_EFE")
+```
+
+```julia
+sF_MSE = round(sum(FE_MSE[:]), digits=2)
+sF_EFE = round(sum(FE_EFE[:]), digits=2)
+
+plot(xlabel="updates (time x iterations)", ylabel="F[q]", size=(900,400))
+plot!(FE_MSE[:], label="MSE, total=$sF_MSE")
+plot!(FE_EFE[:], label="EFE, total=$sF_EFE")
+```
+
+```julia
+evidence_MSE = [-logpdf(py_MSE[k][1], y_MSE[k+1]) for k in 1:(N-1)]
+evidence_EFE = [-logpdf(py_EFE[k][1], y_EFE[k+1]) for k in 1:(N-1)]
+
+total_evidence_MSE = round(sum(evidence_MSE), digits=2)
+total_evidence_EFE = round(sum(evidence_EFE), digits=2)
+
+plot(xlabel="time (steps)", ylabel="-logp(y)", size=(900,400))
+plot!(evidence_MSE, label="MSE, total=$total_evidence_MSE")
+plot!(evidence_EFE, label="EFE, total=$total_evidence_EFE")
+```
 
 ```julia
 CC_MSE = round(sum(abs.(u_MSE)), digits=2)
@@ -350,6 +360,18 @@ CC_EFE = round(sum(abs.(u_EFE)), digits=2)
 plot(xlabel="time (steps)", ylabel="control", size=(900,400))
 plot!(u_MSE, label="Total cost for MSE = $CC_MSE")
 plot!(u_EFE, label="Total cost for EFE = $CC_EFE")
+```
+
+```julia
+J_MSE = [norm(y_MSE[k] - mean(goal),2) for k in 1:N]
+J_EFE = [norm(y_EFE[k] - mean(goal),2) for k in 1:N]
+
+sJ_MSE = norm(y_MSE .- mean(goal),2)
+sJ_EFE = norm(y_EFE .- mean(goal),2)
+
+plot(xlabel="time (steps)", ylabel="||yₖ - m*||", size=(900,400))
+plot!(J_MSE, label="MSE total=$sJ_MSE")
+plot!(J_EFE, label="EFE total=$sJ_EFE")
 ```
 
 ```julia
