@@ -44,7 +44,7 @@ mutable struct NARXAgent
                        pol_degree::Integer=1,
                        thorizon::Integer=1,
                        num_iters::Integer=10,
-                       control_prior::Float64=1.0)
+                       control_prior::Float64=0.0)
 
         model, _ = create_model(NARX(prior_coefficients, prior_precision))
 
@@ -141,8 +141,8 @@ function predictions(agent::NARXAgent, controls::Vector; time_horizon=1)
         
         # Prediction
         m_y[t] = dot(μ, ϕ_t)
-        v_y[t] = (ϕ_t'*Σ*ϕ_t + 1)*β/α
-        # v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
+        # v_y[t] = (ϕ_t'*Σ*ϕ_t + 1)*β/α
+        v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y[t])
@@ -188,7 +188,9 @@ function EFE(agent::NARXAgent, controls)
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
     
-    J = 0
+    # J = 0
+    m_y = 0.0
+    v_y = 0.0
     for t in 1:agent.thorizon
         
         # Update control buffer
@@ -197,21 +199,22 @@ function EFE(agent::NARXAgent, controls)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
-        v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
-        # v_y = ϕ_k'*Σ*ϕ_k + β/α
+        # v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
+        v_y = ϕ_k'*Σ*ϕ_k + β/α
         
         # Accumulate EFE
         # J += ambiguity(agent, ϕ_k) + risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
         # J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
-        if t == agent.thorizon
-            J += risk(agent, Normal(m_y,v_y))
-        else
-            J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]*controls[t+1]
-        end
+        # if t == agent.thorizon
+        #     J += risk(agent, Normal(m_y,v_y))
+        # else
+        #     J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]*controls[t+1]
+        # end
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
     end
+    J = risk(agent, Normal(m_y,v_y))
     return J
 end
 
@@ -225,7 +228,9 @@ function MSE(agent::NARXAgent, controls)
 
     m_star, _ = mean_var(agent.goal)
     
-    J = 0
+    # J = 0
+    m_y = 0.0
+    v_y = 0.0
     for t in 1:agent.thorizon
         
         # Update control buffer
@@ -238,23 +243,30 @@ function MSE(agent::NARXAgent, controls)
         # Accumulate objective function
         # J += (m_star - m_y)^2 + agent.control_prior*controls[t]^2
 
-        if t == agent.thorizon
-            J += (m_star - m_y)^2
-        else
-            J += (m_star - m_y)^2 + agent.control_prior*controls[t]*controls[t+1]
-        end
+        # if t == agent.thorizon
+        #     J += (m_star - m_y)^2
+        # else
+        #     J += (m_star - m_y)^2 + agent.control_prior*controls[t]*controls[t+1]
+        # end
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
     end
+    J = (m_star - m_y)^2
     return J
 end
 
-function minimizeEFE(agent::NARXAgent; u_0=nothing, time_limit=10, control_lims::Tuple=(-Inf,Inf))
+function minimizeEFE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false, control_lims::Tuple=(-Inf,Inf))
     "Minimize EFE objective and return policy."
 
     opts = Optim.Options(time_limit=time_limit)
     if isnothing(u_0); u_0 = zeros(agent.thorizon); end
+    opts = Optim.Options(time_limit=time_limit, 
+                         show_trace=verbose, 
+                         allow_f_increases=true, 
+                         g_tol=1e-12, 
+                         show_every=10,
+                         iterations=10_000)
 
     # Objective function
     J(u) = EFE(agent, u)
@@ -265,11 +277,16 @@ function minimizeEFE(agent::NARXAgent; u_0=nothing, time_limit=10, control_lims:
     return Optim.minimizer(results)
 end
 
-function minimizeMSE(agent::NARXAgent; u_0=nothing, time_limit=10, control_lims::Tuple=(-Inf,Inf))
+function minimizeMSE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false, control_lims::Tuple=(-Inf,Inf))
     "Minimize MSE objective and return policy."
 
-    opts = Optim.Options(time_limit=time_limit)
     if isnothing(u_0); u_0 = zeros(agent.thorizon); end
+    opts = Optim.Options(time_limit=time_limit, 
+                         show_trace=verbose, 
+                         allow_f_increases=true, 
+                         g_tol=1e-12, 
+                         show_every=10,
+                         iterations=10_000)
 
     # Objective function
     J(u) = MSE(agent, u)

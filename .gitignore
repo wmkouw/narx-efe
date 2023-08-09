@@ -26,3 +26,4 @@ Manifest.toml
 # Local
 .ipynb_checkpoints
 .vscode
+archive/
