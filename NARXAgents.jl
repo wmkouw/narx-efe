@@ -121,6 +121,7 @@ end
 
 function predictions(agent::NARXAgent, controls::Vector; time_horizon=1)
     
+    p_y = []
     m_y = zeros(time_horizon)
     v_y = zeros(time_horizon)
 
@@ -143,12 +144,18 @@ function predictions(agent::NARXAgent, controls::Vector; time_horizon=1)
         m_y[t] = dot(μ, ϕ_t)
         # v_y[t] = (ϕ_t'*Σ*ϕ_t + 1)*β/α
         v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
+
+        try
+            push!(p_y, Normal(m_y[t], v_y[t]))
+        catch
+            push!(p_y, NaN)
+        end
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y[t])
         
     end
-    return [Normal(m_y[t], v_y[t]) for t in 1:time_horizon]
+    return p_y
 end
 
 function ambiguity(agent::NARXAgent, ϕ_k)
@@ -214,7 +221,8 @@ function EFE(agent::NARXAgent, controls)
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
     end
-    J = risk(agent, Normal(m_y,v_y))
+    if v_y <= 0.0; error("boom"); end
+    J = risk(agent, Normal(m_y, clamp(v_y, 1e-12, Inf)))
     return J
 end
 
