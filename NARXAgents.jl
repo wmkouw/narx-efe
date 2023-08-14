@@ -22,7 +22,7 @@ mutable struct NARXAgent
     free_energy     ::Vector{Float64}
     qθ              ::NormalDistributionsFamily
     qτ              ::GammaDistributionsFamily 
-    goal            ::NormalDistributionsFamily
+    goals           ::Union{NormalDistributionsFamily, Vector{Any}}
 
     thorizon        ::Integer
     num_iters       ::Integer
@@ -246,7 +246,7 @@ function MSE(agent::NARXAgent, goals, controls)
         m_y = dot(μ, ϕ_k)
         
         # Accumulate objective function
-        if goal == false
+        if goals[t] == false
         else
             J += (mean(goals[t]) - m_y)^2
         end
