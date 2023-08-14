@@ -6,7 +6,7 @@ using Distributions
 using SpecialFunctions
 using LinearAlgebra
 
-export NARXAgent, update!, predictions, ϕ, minimizeEFE, minimizeMSE
+export NARXAgent, update!, predictions, ϕ, minimizeEFE, minimizeMSE, update_goals!
 
 
 mutable struct NARXAgent
@@ -169,10 +169,11 @@ function ambiguity(agent::NARXAgent, ϕ_k)
     # S_k = [Σ                 Σ*ϕ_k;
     #        ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
     
-    Dθ = length(μ)
+    # Dθ = length(μ)
     
     # return logdet(Σ)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
-    return -log(β/α) -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
+    # return -log(β/α) -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
+    return -1/2*(digamma(α) + log(β))
 end
 
 function risk(agent::NARXAgent, prediction::Normal)
@@ -184,7 +185,18 @@ function risk(agent::NARXAgent, prediction::Normal)
     return (log(v_star/v_pred) + (m_pred-m_star)'*inv(v_star)*(m_pred-m_star) + v_pred/v_star)/2
 end
 
-function EFE(agent::NARXAgent, controls)
+function risk(goal::Union{Bool,NormalMeanVariance}, m_pred, v_pred)
+    "KL-divergence between marginal predicted observation and goal prior"
+
+    if goal == false
+        return 0.0
+    else
+        m_star, v_star = mean_var(goal)
+        return (log(v_star/v_pred) + (m_pred-m_star)'*inv(v_star)*(m_pred-m_star) + v_pred/v_star)/2
+    end
+end
+
+function EFE(agent::NARXAgent, goals, controls)
     "Expected Free Energy"
 
     μ = mean( agent.qθ)
@@ -195,9 +207,7 @@ function EFE(agent::NARXAgent, controls)
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
     
-    # J = 0
-    m_y = 0.0
-    v_y = 0.0
+    J = 0
     for t in 1:agent.thorizon
         
         # Update control buffer
@@ -206,39 +216,26 @@ function EFE(agent::NARXAgent, controls)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
-        # v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
         v_y = ϕ_k'*Σ*ϕ_k + β/α
         
         # Accumulate EFE
-        # J += ambiguity(agent, ϕ_k) + risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
-        # J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
-        # if t == agent.thorizon
-        #     J += risk(agent, Normal(m_y,v_y))
-        # else
-        #     J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]*controls[t+1]
-        # end
+        J += risk(goals[t], m_y, v_y)
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
     end
-    if v_y <= 0.0; error("boom"); end
-    J = risk(agent, Normal(m_y, clamp(v_y, 1e-12, Inf)))
     return J
 end
 
-function MSE(agent::NARXAgent, controls)
+function MSE(agent::NARXAgent, goals, controls)
     "Mean Squared Error between prediction and setpoint."
 
     μ = mean( agent.qθ)
 
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
-
-    m_star, _ = mean_var(agent.goal)
     
-    # J = 0
-    m_y = 0.0
-    v_y = 0.0
+    J = 0
     for t in 1:agent.thorizon
         
         # Update control buffer
@@ -249,25 +246,20 @@ function MSE(agent::NARXAgent, controls)
         m_y = dot(μ, ϕ_k)
         
         # Accumulate objective function
-        # J += (m_star - m_y)^2 + agent.control_prior*controls[t]^2
-
-        # if t == agent.thorizon
-        #     J += (m_star - m_y)^2
-        # else
-        #     J += (m_star - m_y)^2 + agent.control_prior*controls[t]*controls[t+1]
-        # end
+        if goal == false
+        else
+            J += (mean(goals[t]) - m_y)^2
+        end
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
     end
-    J = (m_star - m_y)^2
     return J
 end
 
-function minimizeEFE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false, control_lims::Tuple=(-Inf,Inf))
+function minimizeEFE(agent::NARXAgent, goals; u_0=nothing, time_limit=10, verbose=false, control_lims::Tuple=(-Inf,Inf))
     "Minimize EFE objective and return policy."
 
-    opts = Optim.Options(time_limit=time_limit)
     if isnothing(u_0); u_0 = zeros(agent.thorizon); end
     opts = Optim.Options(time_limit=time_limit, 
                          show_trace=verbose, 
@@ -277,7 +269,7 @@ function minimizeEFE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false
                          iterations=10_000)
 
     # Objective function
-    J(u) = EFE(agent, u)
+    J(u) = EFE(agent, goals, u)
 
     # Constrained minimization procedure
     results = optimize(J, control_lims..., u_0, Fminbox(LBFGS()), opts, autodiff=:forward)
@@ -285,7 +277,7 @@ function minimizeEFE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false
     return Optim.minimizer(results)
 end
 
-function minimizeMSE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false, control_lims::Tuple=(-Inf,Inf))
+function minimizeMSE(agent::NARXAgent, goals; u_0=nothing, time_limit=10, verbose=false, control_lims::Tuple=(-Inf,Inf))
     "Minimize MSE objective and return policy."
 
     if isnothing(u_0); u_0 = zeros(agent.thorizon); end
@@ -297,7 +289,7 @@ function minimizeMSE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false
                          iterations=10_000)
 
     # Objective function
-    J(u) = MSE(agent, u)
+    J(u) = MSE(agent, goals, u)
 
     # Constrained minimization procedure
     results = optimize(J, control_lims..., u_0, Fminbox(LBFGS()), opts, autodiff=:forward)
@@ -317,6 +309,12 @@ function backshift(x::AbstractVector, a::Number)
     e = [1.0; zeros(N-1)]
 
     return S*x + e*a
+end
+
+function update_goals!(x::AbstractVector, g::NormalMeanVariance)
+    "Move goals forward and add a final goal"
+    circshift!(x,-1)
+    x[end] = g
 end
 
 end
