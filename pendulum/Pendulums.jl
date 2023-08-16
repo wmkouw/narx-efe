@@ -18,6 +18,7 @@ mutable struct SPendulum <: Pendulum
     length      ::Float64
     damping     ::Float64
     mnoise_sd   ::Float64 # measurement noise standard deviation
+    norm_output ::Float64
 
     function SPendulum(;init_state::Vector{Float64}=zeros(2), 
                         torque_lims::Tuple{Float64,Float64}=(-1.0, 1.0),
@@ -25,10 +26,11 @@ mutable struct SPendulum <: Pendulum
                         length::Float64=1.0, 
                         damping::Float64=0.0, 
                         mnoise_sd::Float64=1.0,
-                        Δt::Float64=1.0)
+                        Δt::Float64=1.0,
+                        norm_output::Float64=1.0)
         
         init_sensor = init_state[1] + mnoise_sd*randn()
-        return new(init_state, init_sensor, 0.0, torque_lims, Δt, mass, length, damping, mnoise_sd)
+        return new(init_state, init_sensor, 0.0, torque_lims, Δt, mass, length, damping, mnoise_sd, norm_output)
     end
 end
 
@@ -44,6 +46,7 @@ mutable struct DPendulum <: Pendulum
     length      ::Vector{Float64}
     damping     ::Float64
     mnoise_S    ::Matrix{Float64}
+    norm_output ::Float64
 
     function DPendulum(;init_state::Vector{Float64}=zeros(4), 
                         torque_lims::Tuple{Float64,Float64}=(-1.0, 1.0),
@@ -51,10 +54,11 @@ mutable struct DPendulum <: Pendulum
                         length::Vector{Float64}=[1.,1.], 
                         damping::Float64=0.0, 
                         mnoise_S::Matrix{Float64}=diagm(ones(2)),
-                        Δt::Float64=1.0)
+                        Δt::Float64=1.0,
+                        norm_output::Float64=1.0)
         
         init_sensor = init_state[1:2] + cholesky(mnoise_S).L*randn(2)
-        return new(init_state, init_sensor, zeros(2), torque_lims, Δt, mass, length, damping, mnoise_S)
+        return new(init_state, init_sensor, zeros(2), torque_lims, Δt, mass, length, damping, mnoise_S, norm_output)
     end
 end
 
@@ -113,10 +117,10 @@ function update!(sys::Pendulum, u)
 end
 
 function emit!(sys::SPendulum)
-    sys.sensor = sys.state[1] + sys.mnoise_sd * randn()
+    sys.sensor = sys.state[1]./sys.norm_output + sys.mnoise_sd * randn()
 end
 function emit!(sys::DPendulum)
-    sys.sensor = sys.state[1:2] + cholesky(sys.mnoise_S).L * randn(2)
+    sys.sensor = sys.state[1:2]./sys.norm_output + cholesky(sys.mnoise_S).L * randn(2)
 end
 
 function step!(sys::Pendulum, u)
