@@ -6,7 +6,7 @@ using Distributions
 using SpecialFunctions
 using LinearAlgebra
 
-export NARXAgent, update!, predictions, ϕ, minimizeEFE, minimizeMSE, update_goals!
+export NARXAgent, update!, predictions, minimizeEFE, minimizeMSE, update_goals!, pol, rbf
 
 
 mutable struct NARXAgent
@@ -28,9 +28,12 @@ mutable struct NARXAgent
     num_iters       ::Integer
     control_prior   ::Float64
 
+    basisfn_class   ::String
+    basisfn_params  ::Union{Integer,Tuple{Vector,Vector}}
+    basisfn         ::Function
+
     delay_in        ::Integer
     delay_out       ::Integer
-    pol_degree      ::Integer
     order           ::Integer
 
     ybuffer         ::Vector{Float64}
@@ -41,7 +44,8 @@ mutable struct NARXAgent
                        goal_prior=NormalMeanVariance(0.0, 1.0),
                        delay_in::Integer=1, 
                        delay_out::Integer=1, 
-                       pol_degree::Integer=1,
+                       basisfn_class::String="pol",
+                       basisfn_params::Union{Integer,Tuple{Vector,Vector}}=1,
                        thorizon::Integer=1,
                        num_iters::Integer=10,
                        control_prior::Float64=0.0)
@@ -56,7 +60,15 @@ mutable struct NARXAgent
         ybuffer = zeros(delay_out)
         ubuffer = zeros(1+delay_in)
 
-        order = size(ϕ(zeros(1+delay_in+delay_out), degree=pol_degree),1)
+        if basisfn_class == "pol"
+            basisfn = (x) -> pol(x, degree=basisfn_params)
+        elseif basisfn_class == "rbf"
+            basisfn = (x) -> rbf(x, basisfn_params...)
+        else
+            error("Basis function class unknown. Options are: 'pol', 'rbf'")
+        end
+
+        order = size(basisfn(zeros(1+delay_in+delay_out)),1)
         if order != length(prior_coefficients) 
             error("Dimensionality of coefficients prior and model order do not match.")
         end
@@ -70,20 +82,27 @@ mutable struct NARXAgent
                    thorizon,
                    num_iters,
                    control_prior,
+                   basisfn_class,
+                   basisfn_params,
+                   basisfn,
                    delay_in,
                    delay_out,
-                   pol_degree,
                    order,
                    ybuffer,
                    ubuffer)
     end
 end
 
-ϕ(x; degree::Integer = 1) = cat([1; [x.^d for d in 1:degree]]...,dims=1)
+pol(x; degree::Integer = 1) = cat([1; [x.^d for d in 1:degree]]...,dims=1)
+
+function rbf(x, centers::Vector, scales::Vector)
+    "Radial basis function expansion"
+    return [exp(-scales[i]*(x-centers[i])'*(x-centers[i])) for i in 1:length(centers)]
+end
 
 @model function NARX(pθ, pτ)
     
-    ϕ = datavar(Vector{Float64})
+    z = datavar(Vector{Float64})
     y = datavar(Float64)
     
     # Priors
@@ -91,19 +110,19 @@ end
     τ  ~ GammaShapeRate(shape(pτ), rate(pτ))
         
     # Likelihood
-    y ~ NormalMeanPrecision(dot(θ,ϕ), τ)
+    y ~ NormalMeanPrecision(dot(θ,z), τ)
 
     return θ,τ
 end
 
-function update!(agent::NARXAgent, observation::Float64, control::Float64)
+function update!(agent::NARXAgent, output::Float64, control::Float64)
 
     agent.ubuffer = backshift(agent.ubuffer, control)
-    memory = ϕ([agent.ybuffer; agent.ubuffer], degree=agent.pol_degree)
+    input = agent.basisfn([agent.ybuffer; agent.ubuffer])
 
     results = inference(
         model         = NARX(agent.qθ, agent.qτ), 
-        data          = (y = observation, ϕ = memory), 
+        data          = (y = output, z = input), 
         initmarginals = (θ = agent.qθ, τ = agent.qτ),
         initmessages  = (θ = agent.qθ, τ = agent.qτ),
         returnvars    = (θ = KeepLast(), τ = KeepLast()),
@@ -116,7 +135,7 @@ function update!(agent::NARXAgent, observation::Float64, control::Float64)
     agent.qθ = results.posteriors[:θ]
     agent.qτ = results.posteriors[:τ]
 
-    agent.ybuffer = backshift(agent.ybuffer, observation)
+    agent.ybuffer = backshift(agent.ybuffer, output)
 end
 
 function predictions(agent::NARXAgent, controls::Vector; time_horizon=1)
@@ -138,11 +157,10 @@ function predictions(agent::NARXAgent, controls::Vector; time_horizon=1)
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
-        ϕ_t = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
+        ϕ_t = agent.basisfn([ybuffer; ubuffer])
         
         # Prediction
         m_y[t] = dot(μ, ϕ_t)
-        # v_y[t] = (ϕ_t'*Σ*ϕ_t + 1)*β/α
         v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
 
         try
@@ -161,18 +179,9 @@ end
 function ambiguity(agent::NARXAgent, ϕ_k)
     "Entropies of parameters minus joint entropy of future observation and parameters"
     
-    μ = mean( agent.qθ)
-    Σ = cov(  agent.qθ)
     α = shape(agent.qτ)
     β = rate( agent.qτ)
     
-    # S_k = [Σ                 Σ*ϕ_k;
-    #        ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
-    
-    # Dθ = length(μ)
-    
-    # return logdet(Σ)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
-    # return -log(β/α) -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
     return -1/2*(digamma(α) + log(β))
 end
 
@@ -212,7 +221,7 @@ function EFE(agent::NARXAgent, goals, controls)
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
-        ϕ_k = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
+        ϕ_k = agent.basisfn([ybuffer; ubuffer])
         
         # Prediction
         m_y = dot(μ, ϕ_k)
@@ -240,7 +249,7 @@ function MSE(agent::NARXAgent, goals, controls)
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
-        ϕ_k = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
+        ϕ_k = agent.basisfn([ybuffer; ubuffer])
         
         # Prediction
         m_y = dot(μ, ϕ_k)
