@@ -29,7 +29,7 @@ mutable struct NARXAgent
     control_prior   ::Float64
 
     basisfn_class   ::String
-    basisfn_params  ::Union{Integer,Tuple{Vector,Vector}}
+    basisfn_params  ::Union{Integer,Tuple{Matrix,Vector}}
     basisfn         ::Function
 
     delay_in        ::Integer
@@ -45,7 +45,7 @@ mutable struct NARXAgent
                        delay_in::Integer=1, 
                        delay_out::Integer=1, 
                        basisfn_class::String="pol",
-                       basisfn_params::Union{Integer,Tuple{Vector,Vector}}=1,
+                       basisfn_params::Union{Integer,Tuple{Matrix,Vector}}=1,
                        thorizon::Integer=1,
                        num_iters::Integer=10,
                        control_prior::Float64=0.0)
@@ -95,9 +95,9 @@ end
 
 pol(x; degree::Integer = 1) = cat([1; [x.^d for d in 1:degree]]...,dims=1)
 
-function rbf(x, centers::Vector, scales::Vector)
+function rbf(x, centers::Matrix, scales::Vector)
     "Radial basis function expansion"
-    return [exp(-scales[i]*(x-centers[i])'*(x-centers[i])) for i in 1:length(centers)]
+    return [1.0; [exp(-scales[i]*sqrt((x-centers[:,i])'*(x-centers[:,i]))) for i in 1:length(scales)]]
 end
 
 @model function NARX(pθ, pτ)
