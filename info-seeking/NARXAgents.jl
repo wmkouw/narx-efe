@@ -6,7 +6,7 @@ using Distributions
 using SpecialFunctions
 using LinearAlgebra
 
-export NARXAgent, update!, predictions, ϕ, minimizeEFE, minimizeMSE
+export NARXAgent, update!, predictions, ϕ, risk, ambiguity, mutualinfo, minimizeEFE, minimizeMSE, backshift
 
 
 mutable struct NARXAgent
@@ -28,8 +28,8 @@ mutable struct NARXAgent
     num_iters       ::Integer
     control_prior   ::Float64
 
-    memory_actions  ::Integer
-    memory_senses   ::Integer
+    delay_inp       ::Integer
+    delay_out       ::Integer
     pol_degree      ::Integer
     order           ::Integer
 
@@ -39,8 +39,8 @@ mutable struct NARXAgent
     function NARXAgent(prior_coefficients, 
                        prior_precision; 
                        goal_prior=NormalMeanVariance(0.0, 1.0),
-                       memory_actions::Integer=1, 
-                       memory_senses::Integer=1, 
+                       delay_inp::Integer=1, 
+                       delay_out::Integer=1, 
                        pol_degree::Integer=1,
                        thorizon::Integer=1,
                        num_iters::Integer=10,
@@ -53,10 +53,10 @@ mutable struct NARXAgent
         end
 
         free_energy = [Inf]
-        ybuffer = zeros(memory_senses)
-        ubuffer = zeros(memory_actions)
+        ybuffer = zeros(delay_out)
+        ubuffer = zeros(delay_inp)
 
-        order = size(ϕ(zeros(memory_actions+memory_senses), degree=pol_degree),1)
+        order = size(ϕ(zeros(delay_inp+delay_out), degree=pol_degree),1)
         if order != length(prior_coefficients) 
             error("Dimensionality of coefficients prior and model order do not match.")
         end
@@ -70,8 +70,8 @@ mutable struct NARXAgent
                    thorizon,
                    num_iters,
                    control_prior,
-                   memory_actions,
-                   memory_senses,
+                   delay_inp,
+                   delay_out,
                    pol_degree,
                    order,
                    ybuffer,
@@ -99,11 +99,11 @@ end
 function update!(agent::NARXAgent, observation::Float64, control::Float64)
 
     agent.ubuffer = backshift(agent.ubuffer, control)
-    memory = ϕ([agent.ybuffer; agent.ubuffer], degree=agent.pol_degree)
+    input = ϕ([agent.ybuffer; agent.ubuffer], degree=agent.pol_degree)
 
     results = inference(
         model         = NARX(agent.qθ, agent.qτ), 
-        data          = (y = observation, ϕ = memory), 
+        data          = (y = observation, ϕ = input), 
         initmarginals = (θ = agent.qθ, τ = agent.qτ),
         initmessages  = (θ = agent.qθ, τ = agent.qτ),
         returnvars    = (θ = KeepLast(), τ = KeepLast()),
@@ -165,15 +165,26 @@ function ambiguity(agent::NARXAgent, ϕ_k)
     
     # return logdet(Σ)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
     # return -log(β/α) -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
-    return -(logdet(Σ) +logdet(ϕ_k'*Σ*ϕ_k+β/α))/2
+    return -(logdet(Σ) + logdet(ϕ_k'*Σ*ϕ_k+β/α))/2
 end
 
-function risk(agent::NARXAgent, prediction::Normal)
-    "KL-divergence between marginal predicted observation and goal prior"
+function mutualinfo(agent::NARXAgent, ϕ_k)
+    "Entropies of parameters minus joint entropy of future observation and parameters"
     
-    m_pred, v_pred = mean_var(prediction)
+    α = shape(agent.qτ)
+    β = rate( agent.qτ)
+    μ = mean( agent.qθ)
+    Σ = cov(  agent.qθ)
+    D = length(μ)
+    
+    S0 = [Σ       Σ*ϕ_k;     ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
+    S1 = [Σ  zeros(D,1); zeros(1,D)   ϕ_k'*Σ*ϕ_k+β/α]
+    return 1/2(tr(inv(S1)*S0) + log(det(S1)/det(S0)))
+end
+
+function risk(agent, m_pred, v_pred)
+    "KL-divergence between marginal predicted observation and goal prior"  
     m_star, v_star = mean_var(agent.goal)
-    
     return (log(v_star/v_pred) + (m_pred-m_star)'*inv(v_star)*(m_pred-m_star) + v_pred/v_star)/2
 end
 
@@ -197,11 +208,12 @@ function EFE(agent::NARXAgent, controls)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
-        v_y = (ϕ_k'*Σ*ϕ_k + 1)*β/α
+        v_y = ϕ_k'*Σ*ϕ_k + β/α
         
         # Accumulate EFE
-        J += ambiguity(agent, ϕ_k) + risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
-        # J += risk(agent, Normal(m_y,v_y)) + agent.control_prior*controls[t]^2
+        # J += ambiguity(agent, ϕ_k) + risk(agent, m_y,v_y) + agent.control_prior*controls[t]^2
+        J += mutualinfo(agent, ϕ_k) + risk(agent, m_y,v_y) + agent.control_prior*controls[t]^2
+        # J += risk(agent, m_y, v_y) + agent.control_prior*controls[t]^2
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
@@ -238,30 +250,42 @@ function MSE(agent::NARXAgent, controls)
     return J
 end
 
-function minimizeEFE(agent::NARXAgent; tlimit=10, u_lims::Tuple=(-Inf,Inf))
+function minimizeEFE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false, control_lims::Tuple=(-Inf,Inf))
     "Minimize EFE objective and return policy."
 
-    opts = Optim.Options(time_limit=tlimit)
+    if isnothing(u_0); u_0 = zeros(agent.thorizon); end
+    opts = Optim.Options(time_limit=time_limit, 
+                         show_trace=verbose, 
+                         allow_f_increases=true, 
+                         g_tol=1e-12, 
+                         show_every=10,
+                         iterations=10_000)
 
     # Objective function
     J(u) = EFE(agent, u)
 
     # Constrained minimization procedure
-    results = optimize(J, u_lims..., zeros(agent.thorizon), Fminbox(LBFGS()), opts, autodiff=:forward)
+    results = optimize(J, control_lims..., u_0, Fminbox(LBFGS()), opts, autodiff=:forward)
 
     return Optim.minimizer(results)
 end
 
-function minimizeMSE(agent::NARXAgent; tlimit=10, u_lims::Tuple=(-Inf,Inf))
+function minimizeMSE(agent::NARXAgent; u_0=nothing, time_limit=10, verbose=false, control_lims::Tuple=(-Inf,Inf))
     "Minimize MSE objective and return policy."
 
-    opts = Optim.Options(time_limit=tlimit)
+    if isnothing(u_0); u_0 = zeros(agent.thorizon); end
+    opts = Optim.Options(time_limit=time_limit, 
+                         show_trace=verbose, 
+                         allow_f_increases=true, 
+                         g_tol=1e-12, 
+                         show_every=10,
+                         iterations=10_000)
 
     # Objective function
     J(u) = MSE(agent, u)
 
     # Constrained minimization procedure
-    results = optimize(J, u_lims..., zeros(agent.thorizon), Fminbox(LBFGS()), opts, autodiff=:forward)
+    results = optimize(J, control_lims..., u_0, Fminbox(LBFGS()), opts, autodiff=:forward)
 
     return Optim.minimizer(results)
 end
