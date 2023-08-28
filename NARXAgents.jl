@@ -54,9 +54,9 @@ mutable struct NARXAgent
 
         free_energy = [Inf]
         ybuffer = zeros(delay_out)
-        ubuffer = zeros(delay_inp)
+        ubuffer = zeros(delay_inp+1)
 
-        order = size(ϕ(zeros(delay_inp+delay_out), degree=pol_degree),1)
+        order = size(ϕ(zeros(1 + delay_inp + delay_out), degree=pol_degree),1)
         if order != length(prior_coefficients) 
             error("Dimensionality of coefficients prior and model order do not match.")
         end
@@ -79,7 +79,15 @@ mutable struct NARXAgent
     end
 end
 
-ϕ(x; degree::Integer = 1) = cat([1; [x.^d for d in 1:degree]]...,dims=1)
+function ϕ(x::Vector; degree::Integer=1) 
+    v = [1.0]
+    for n in 1:length(x)
+        for d in 1:degree
+            push!(v, x[n].^d)
+        end
+    end
+    return v
+end
 
 @model function NARX(pθ, pτ)
     
