@@ -6,7 +6,7 @@ using Distributions
 using SpecialFunctions
 using LinearAlgebra
 
-export NARXAgent, update!, predictions, ϕ, risk, mutualinfo, minimizeEFE, minimizeMSE, backshift, update_goals!
+export NARXAgent, update!, predictions, pol, risk, mutualinfo, minimizeEFE, minimizeMSE, backshift, update_goals!
 
 
 mutable struct NARXAgent
@@ -56,7 +56,7 @@ mutable struct NARXAgent
         ybuffer = zeros(delay_out)
         ubuffer = zeros(delay_inp+1)
 
-        order = size(ϕ(zeros(1 + delay_inp + delay_out), degree=pol_degree),1)
+        order = size(pol(zeros(1 + delay_inp + delay_out), degree=pol_degree),1)
         if order != length(prior_coefficients) 
             error("Dimensionality of coefficients prior and model order do not match.")
         end
@@ -79,15 +79,7 @@ mutable struct NARXAgent
     end
 end
 
-function ϕ(x::Vector; degree::Integer=1) 
-    v = [1.0]
-    for n in 1:length(x)
-        for d in 1:degree
-            push!(v, x[n].^d)
-        end
-    end
-    return v
-end
+pol(x; degree::Integer = 1) = cat([1.0; [x.^d for d in 1:degree]]...,dims=1)
 
 @model function NARX(pθ, pτ)
     
@@ -107,7 +99,7 @@ end
 function update!(agent::NARXAgent, observation::Float64, control::Float64)
 
     agent.ubuffer = backshift(agent.ubuffer, control)
-    input = ϕ([agent.ybuffer; agent.ubuffer], degree=agent.pol_degree)
+    input = pol([agent.ybuffer; agent.ubuffer], degree=agent.pol_degree)
 
     results = inference(
         model         = NARX(agent.qθ, agent.qτ), 
@@ -145,7 +137,7 @@ function predictions(agent::NARXAgent, controls; time_horizon=1)
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
-        ϕ_t = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
+        ϕ_t = pol([ybuffer; ubuffer], degree=agent.pol_degree)
         
         # Prediction
         m_y[t] = dot(μ, ϕ_t)
@@ -211,7 +203,7 @@ function EFE(agent::NARXAgent, goals, controls)
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
-        ϕ_k = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
+        ϕ_k = pol([ybuffer; ubuffer], degree=agent.pol_degree)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
@@ -240,7 +232,7 @@ function MSE(agent::NARXAgent, goals, controls)
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
-        ϕ_k = ϕ([ybuffer; ubuffer], degree=agent.pol_degree)
+        ϕ_k = pol([ybuffer; ubuffer], degree=agent.pol_degree)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
