@@ -6,7 +6,7 @@ using Distributions
 using SpecialFunctions
 using LinearAlgebra
 
-export NARXAgent, update!, predictions, pol, risk, mutualinfo, minimizeEFE, minimizeMSE, backshift, update_goals!
+export NARXAgent, update!, predictions, pol, crossentropy, mutualinfo, minimizeEFE, minimizeMSE, backshift, update_goals!
 
 
 mutable struct NARXAgent
@@ -141,7 +141,7 @@ function predictions(agent::NARXAgent, controls; time_horizon=1)
         
         # Prediction
         m_y[t] = dot(μ, ϕ_t)
-        v_y[t] = ϕ_t'*Σ*ϕ_t + β/α
+        v_y[t] = (ϕ_t'*Σ*ϕ_t + β/α)*2α/(2α-2)
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y[t])
@@ -179,13 +179,15 @@ function mutualinfo(agent::NARXAgent, ϕ_k)
     
     S0 = [Σ       Σ*ϕ_k;     ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
     S1 = [Σ  zeros(D,1); zeros(1,D)   ϕ_k'*Σ*ϕ_k+β/α]
-    return 1/2(tr(inv(S1)*S0) + log(det(S1)/det(S0)))
+    return 1/2(tr(inv(S1)*S0) +logdet(S1) -logdet(S0))
 end
 
-function risk(goal::NormalMeanVariance, m_pred, v_pred)
+function crossentropy(agent::NARXAgent, goal::NormalMeanVariance, m_pred, v_pred)
     "Entropy of marginal prediction + KL-divergence between marginal prediction and goal prior"  
-    return (v_pred + (m_pred - mean(goal))^2) ./(2var(goal))
-end
+
+    α = shape(agent.qτ)
+    return ( (v_pred).*2α/(2α-2) + (m_pred - mean(goal))^2)/(2var(goal))
+end 
 
 function EFE(agent::NARXAgent, goals, controls)
     "Expected Free Energy"
@@ -207,11 +209,10 @@ function EFE(agent::NARXAgent, goals, controls)
         
         # Prediction
         m_y = dot(μ, ϕ_k)
-        v_y = ϕ_k'*Σ*ϕ_k + β/α
+        v_y = (ϕ_k'*Σ*ϕ_k + β/α)*2α/(2α-2)
         
         # Accumulate EFE
-        J += mutualinfo(agent, ϕ_k) + risk(goals[t], m_y,v_y) + agent.control_prior*controls[t]^2
-        # J += risk(agent, m_y, v_y) + agent.control_prior*controls[t]^2
+        J += mutualinfo(agent, ϕ_k) + crossentropy(agent, goals[t], m_y,v_y) + agent.control_prior*controls[t]^2
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
