@@ -168,18 +168,19 @@ function ambiguity(agent::NARXAgent, ϕ_k)
     return -(logdet(Σ) + logdet(ϕ_k'*Σ*ϕ_k+β/α))/2
 end
 
-function mutualinfo(agent::NARXAgent, ϕ_k)
+function mutualinfo(agent::NARXAgent, ϕ_t)
     "Entropies of parameters minus joint entropy of future observation and parameters"
     
     α = shape(agent.qτ)
     β = rate( agent.qτ)
     μ = mean( agent.qθ)
     Σ = cov(  agent.qθ)
-    D = length(μ)
+    # D = length(μ)
     
-    S0 = [Σ       Σ*ϕ_k;     ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
-    S1 = [Σ  zeros(D,1); zeros(1,D)   ϕ_k'*Σ*ϕ_k+β/α]
-    return 1/2(tr(inv(S1)*S0) +logdet(S1) -logdet(S0))
+    # S0 = [Σ       Σ*ϕ_k;     ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
+    # S1 = [Σ  zeros(D,1); zeros(1,D)   ϕ_k'*Σ*ϕ_k+β/α]
+    # return 1/2(tr(inv(S1)*S0) +logdet(S1) -logdet(S0))
+    return -log(ϕ_t'*Σ*ϕ_t + β/α)
 end
 
 function crossentropy(agent::NARXAgent, goal::NormalMeanVariance, m_pred, v_pred)
