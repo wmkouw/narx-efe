@@ -11,112 +11,112 @@ export NARXAgent, update!, predictions, pol, crossentropy, mutualinfo, minimizeE
 
 mutable struct NARXAgent
     """
-    Active inference agent based on a Nonlinear Auto-Regressive eXogenous model.
+    Active inference agent based on a Nonlinear Auto-Regressive model with eXogenous control.
 
     Parameters are inferred through Bayesian filtering and controls through minimizing expected free energy.
     """
 
-    ybuffer         ::Vector{Float64}
-    ubuffer         ::Vector{Float64}
+    model           ::FactorGraphModel
+    constraints     ::ConstraintsSpecification
+
+    free_energy     ::Vector{Float64}
+    qθ              ::NormalDistributionsFamily
+    qτ              ::GammaDistributionsFamily 
+    goals           ::Union{NormalDistributionsFamily, Vector}
+
+    thorizon        ::Integer
+    num_iters       ::Integer
+    control_prior   ::Float64
+
     delay_inp       ::Integer
     delay_out       ::Integer
     pol_degree      ::Integer
     order           ::Integer
 
-    μ               ::Vector{Float64}   # Coefficients mean
-    Λ               ::Matrix{Float64}   # Coefficients precision
-    α               ::Float64           # Likelihood precision shape
-    β               ::Float64           # Likelihood precision rate
-    λ               ::Float64           # Control prior precision
+    ybuffer         ::Vector{Float64}
+    ubuffer         ::Vector{Float64}
 
-    goals           ::Union{NormalDistributionsFamily, Vector}
-    thorizon        ::Integer
-    num_iters       ::Integer
-
-    free_energy     ::Float64
-
-    function NARXAgent(coefficients_mean,
-                       coefficients_precision,
-                       noise_shape,
-                       noise_rate; 
+    function NARXAgent(prior_coefficients, 
+                       prior_precision; 
                        goal_prior=NormalMeanVariance(0.0, 1.0),
                        delay_inp::Integer=1, 
                        delay_out::Integer=1, 
                        pol_degree::Integer=1,
                        thorizon::Integer=1,
                        num_iters::Integer=10,
-                       control_prior_precision::Float64=0.0)
+                       control_prior::Float64=0.0)
 
+        model, _ = create_model(NARX(prior_coefficients, prior_precision))
+
+        constraints = @constraints begin 
+            q(θ, τ) = q(θ)q(τ)
+        end
+
+        free_energy = [Inf]
         ybuffer = zeros(delay_out)
         ubuffer = zeros(delay_inp+1)
 
         order = size(pol(zeros(1 + delay_inp + delay_out), degree=pol_degree),1)
-        if order != length(coefficients_mean) 
-            error("Dimensionality of coefficients and model order do not match.")
+        if order != length(prior_coefficients) 
+            error("Dimensionality of coefficients prior and model order do not match.")
         end
 
-        free_energy = Inf
-
-        return new(ybuffer,
-                   ubuffer,
+        return new(model, 
+                   constraints,
+                   free_energy,
+                   prior_coefficients, 
+                   prior_precision,
+                   goal_prior,
+                   thorizon,
+                   num_iters,
+                   control_prior,
                    delay_inp,
                    delay_out,
                    pol_degree,
                    order,
-                   coefficients_mean,
-                   coefficients_precision,
-                   noise_shape,
-                   noise_rate,
-                   control_prior_precision,
-                   goal_prior,
-                   thorizon,
-                   num_iters,
-                   free_energy)
+                   ybuffer,
+                   ubuffer)
     end
 end
 
 pol(x; degree::Integer = 1) = cat([1.0; [x.^d for d in 1:degree]]...,dims=1)
 
-function update!(agent::NARXAgent, y::Float64, u::Float64)
+@model function NARX(pθ, pτ)
+    
+    ϕ = datavar(Vector{Float64})
+    y = datavar(Float64)
+    
+    # Priors
+    θ  ~ MvNormalMeanCovariance(mean(pθ), cov(pθ))
+    τ  ~ GammaShapeRate(shape(pτ), rate(pτ))
+        
+    # Likelihood
+    y ~ NormalMeanPrecision(dot(θ,ϕ), τ)
 
-    agent.ubuffer = backshift(agent.ubuffer, u)
-    ϕ = pol([agent.ybuffer; agent.ubuffer], degree=agent.pol_degree)
-
-    μ0 = agent.μ
-    Λ0 = agent.Λ
-    α0 = agent.α
-    β0 = agent.β
-
-    agent.μ = inv(ϕ*ϕ' + Λ0)*(ϕ*y + Λ0*μ0)
-    agent.Λ = ϕ*ϕ' + Λ0
-    agent.α = α0 + 1/2
-    agent.β = β0 + 1/2*(y^2 + μ0'*Λ0*μ0 - (ϕ*y + Λ0*μ0)'*inv(ϕ*ϕ' + Λ0)*(ϕ*y + Λ0*μ0))
-
-    agent.ybuffer = backshift(agent.ybuffer, y)
-
-    agent.free_energy = -log(marginal_likelihood(agent, (μ0, Λ0, α0, β0)))
+    return θ,τ
 end
 
-function params(agent::NARXAgent)
-    return agent.μ, agent.Λ, agent.α, agent.β
-end
+function update!(agent::NARXAgent, observation::Float64, control::Float64)
 
-function marginal_likelihood(agent::NARXAgent, prior_params)
+    agent.ubuffer = backshift(agent.ubuffer, control)
+    input = pol([agent.ybuffer; agent.ubuffer], degree=agent.pol_degree)
 
-    μn, Λn, αn, βn = params(agent)
-    μ0, Λ0, α0, β0 = prior_params
+    results = inference(
+        model         = NARX(agent.qθ, agent.qτ), 
+        data          = (y = observation, ϕ = input), 
+        initmarginals = (θ = agent.qθ, τ = agent.qτ),
+        initmessages  = (θ = agent.qθ, τ = agent.qτ),
+        returnvars    = (θ = KeepLast(), τ = KeepLast()),
+        constraints   = agent.constraints, 
+        iterations    = agent.num_iters,
+        free_energy   = true,
+    )
 
-    return (det(Λn)^(-1/2)*gamma(αn)*βn^αn)/(det(Λ0)^(-1/2)*gamma(α0)*β0^α0) * (2π)^(-1/2)
-end
+    agent.free_energy = results.free_energy
+    agent.qθ = results.posteriors[:θ]
+    agent.qτ = results.posteriors[:τ]
 
-function posterior_predictive(agent::NARXAgent, ϕ)
-    "Posterior predictive distribution is location-scale t-distributed"
-
-    ν_star = 2*agent.α
-    μ_star = dot(agent.μ, ϕ)
-    σ_star = sqrt( agent.β/agent.α*(1 + ϕ'*inv(agent.Λ)*ϕ) ) 
-
-    return ν_star, μ_star, σ_star
+    agent.ybuffer = backshift(agent.ybuffer, observation)
 end
 
 function predictions(agent::NARXAgent, controls; time_horizon=1)
@@ -126,18 +126,22 @@ function predictions(agent::NARXAgent, controls; time_horizon=1)
 
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
+
+    # Unpack parameters
+    μ = mean( agent.qθ)
+    Σ = cov(  agent.qθ)
+    α = shape(agent.qτ)
+    β = rate( agent.qτ)
     
     for t in 1:time_horizon
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
         ϕ_t = pol([ybuffer; ubuffer], degree=agent.pol_degree)
-
-        ν_t, μ_t, σ_t = posterior_predictive(agent, ϕ_t)
         
         # Prediction
-        m_y[t] = μ_t
-        v_y[t] = σ_t^2 * ν_t/(ν_t - 2)
+        m_y[t] = dot(μ, ϕ_t)
+        v_y[t] = (ϕ_t'*Σ*ϕ_t + β/α)*2α/(2α-2)
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y[t])
