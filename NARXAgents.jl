@@ -43,7 +43,7 @@ mutable struct NARXAgent
                        delay_inp::Integer=1, 
                        delay_out::Integer=1, 
                        pol_degree::Integer=1,
-                       thorizon::Integer=1,
+                       time_horizon::Integer=1,
                        num_iters::Integer=10,
                        control_prior_precision::Float64=0.0)
 
@@ -69,7 +69,7 @@ mutable struct NARXAgent
                    noise_rate,
                    control_prior_precision,
                    goal_prior,
-                   thorizon,
+                   time_horizon,
                    num_iters,
                    free_energy)
     end
@@ -114,9 +114,9 @@ function posterior_predictive(agent::NARXAgent, ϕ)
 
     ν_star = 2*agent.α
     μ_star = dot(agent.μ, ϕ)
-    σ_star = sqrt( agent.β/agent.α*(1 + ϕ'*inv(agent.Λ)*ϕ) ) 
+    σ2_star = agent.β/agent.α*(1 + ϕ'*inv(agent.Λ)*ϕ)
 
-    return ν_star, μ_star, σ_star
+    return ν_star, μ_star, σ2_star
 end
 
 function predictions(agent::NARXAgent, controls; time_horizon=1)
@@ -133,11 +133,11 @@ function predictions(agent::NARXAgent, controls; time_horizon=1)
         ubuffer = backshift(ubuffer, controls[t])
         ϕ_t = pol([ybuffer; ubuffer], degree=agent.pol_degree)
 
-        ν_t, μ_t, σ_t = posterior_predictive(agent, ϕ_t)
+        ν_t, μ_t, σ2_t = posterior_predictive(agent, ϕ_t)
         
         # Prediction
         m_y[t] = μ_t
-        v_y[t] = σ_t^2 * ν_t/(ν_t - 2)
+        v_y[t] = σ2_t * ν_t/(ν_t - 2)
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y[t])
@@ -146,35 +146,19 @@ function predictions(agent::NARXAgent, controls; time_horizon=1)
     return m_y, v_y
 end
 
-function mutualinfo(agent::NARXAgent, ϕ_t)
-    "Entropies of parameters minus joint entropy of future observation and parameters"
-    
-    α = shape(agent.qτ)
-    β = rate( agent.qτ)
-    μ = mean( agent.qθ)
-    Σ = cov(  agent.qθ)
-    # D = length(μ)
-    
-    # S0 = [Σ       Σ*ϕ_k;     ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
-    # S1 = [Σ  zeros(D,1); zeros(1,D)   ϕ_k'*Σ*ϕ_k+β/α]
-    # return 1/2(tr(inv(S1)*S0) +logdet(S1) -logdet(S0))
-    return -1/2*log(ϕ_t'*Σ*ϕ_t + β/α)
+function mutualinfo(agent::NARXAgent, ϕ)
+    "Mutual information between parameters and posterior predictive (constant terms dropped)"
+    return -1/2*log( agent.β/agent.α*(1 + ϕ'*inv(agent.Λ)*ϕ) )
 end
 
 function crossentropy(agent::NARXAgent, goal::NormalMeanVariance, m_pred, v_pred)
-    "Entropy of marginal prediction + KL-divergence between marginal prediction and goal prior"  
-
-    ν = 2agent.α
-    return ( (v_pred).*ν/(ν-2) + (m_pred - mean(goal))^2)/(2var(goal))
+    "Cross-entropy between posterior predictive and goal prior (constant terms dropped)"  
+    # return ( v_pred + (m_pred - mean(goal))^2)/(2var(goal))
+    return (m_pred - mean(goal))^2/(2var(goal))
 end 
 
 function EFE(agent::NARXAgent, goals, controls)
     "Expected Free Energy"
-
-    μ = mean( agent.qθ)
-    Σ = cov(  agent.qθ)
-    α = shape(agent.qτ)
-    β = rate( agent.qτ)
 
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
@@ -185,13 +169,13 @@ function EFE(agent::NARXAgent, goals, controls)
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
         ϕ_t = pol([ybuffer; ubuffer], degree=agent.pol_degree)
-        
+
         # Prediction
-        m_y = dot(agent.μ, ϕ_t)
-        v_y = (ϕ_k'*Σ*ϕ_k + β/α)*2α/(2α-2)
+        ν_t, m_y, σ2_t = posterior_predictive(agent, ϕ_t)
+        v_y = σ2_t * ν_t/(ν_t - 2)
         
         # Accumulate EFE
-        J += mutualinfo(agent, ϕ_k) + crossentropy(agent, goals[t], m_y,v_y) + agent.λ*controls[t]^2
+        J += mutualinfo(agent, ϕ_t) + crossentropy(agent, goals[t], m_y,v_y) + agent.λ*controls[t]^2
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
@@ -201,8 +185,6 @@ end
 
 function MSE(agent::NARXAgent, goals, controls)
     "Mean Squared Error between prediction and setpoint."
-
-    μ = mean( agent.qθ)
 
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
@@ -215,10 +197,10 @@ function MSE(agent::NARXAgent, goals, controls)
         ϕ_k = pol([ybuffer; ubuffer], degree=agent.pol_degree)
         
         # Prediction
-        m_y = dot(μ, ϕ_k)
+        m_y = dot(agent.μ, ϕ_k)
         
         # Accumulate objective function
-        J += (mean(goals[t]) - m_y)^2 + agent.control_prior*controls[t]^2
+        J += (mean(goals[t]) - m_y)^2 + agent.λ*controls[t]^2
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
