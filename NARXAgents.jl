@@ -146,24 +146,6 @@ function predictions(agent::NARXAgent, controls; time_horizon=1)
     return m_y, v_y
 end
 
-function ambiguity(agent::NARXAgent, ϕ_k)
-    "Entropies of parameters minus joint entropy of future observation and parameters"
-    
-    μ = mean( agent.qθ)
-    Σ = cov(  agent.qθ)
-    α = shape(agent.qτ)
-    β = rate( agent.qτ)
-    
-    # S_k = [Σ                 Σ*ϕ_k;
-    #        ϕ_k'*Σ   ϕ_k'*Σ*ϕ_k+β/α]
-    
-    Dθ = length(μ)
-    
-    # return logdet(Σ)/2 -logdet(S_k)/2 -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
-    # return -log(β/α) -(1+(Dθ-2)/2)*log(β) +(1+(Dθ-2)/2)*digamma(α)
-    return -(logdet(Σ) + logdet(ϕ_k'*Σ*ϕ_k+β/α))/2
-end
-
 function mutualinfo(agent::NARXAgent, ϕ_t)
     "Entropies of parameters minus joint entropy of future observation and parameters"
     
@@ -182,8 +164,8 @@ end
 function crossentropy(agent::NARXAgent, goal::NormalMeanVariance, m_pred, v_pred)
     "Entropy of marginal prediction + KL-divergence between marginal prediction and goal prior"  
 
-    α = shape(agent.qτ)
-    return ( (v_pred).*2α/(2α-2) + (m_pred - mean(goal))^2)/(2var(goal))
+    ν = 2agent.α
+    return ( (v_pred).*ν/(ν-2) + (m_pred - mean(goal))^2)/(2var(goal))
 end 
 
 function EFE(agent::NARXAgent, goals, controls)
@@ -202,14 +184,14 @@ function EFE(agent::NARXAgent, goals, controls)
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
-        ϕ_k = pol([ybuffer; ubuffer], degree=agent.pol_degree)
+        ϕ_t = pol([ybuffer; ubuffer], degree=agent.pol_degree)
         
         # Prediction
-        m_y = dot(μ, ϕ_k)
+        m_y = dot(agent.μ, ϕ_t)
         v_y = (ϕ_k'*Σ*ϕ_k + β/α)*2α/(2α-2)
         
         # Accumulate EFE
-        J += mutualinfo(agent, ϕ_k) + crossentropy(agent, goals[t], m_y,v_y) + agent.control_prior*controls[t]^2
+        J += mutualinfo(agent, ϕ_k) + crossentropy(agent, goals[t], m_y,v_y) + agent.λ*controls[t]^2
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
