@@ -109,14 +109,14 @@ function marginal_likelihood(agent::NARXAgent, prior_params)
     return (det(Λn)^(-1/2)*gamma(αn)*βn^αn)/(det(Λ0)^(-1/2)*gamma(α0)*β0^α0) * (2π)^(-1/2)
 end
 
-function posterior_predictive(agent::NARXAgent, ϕ)
+function posterior_predictive(agent::NARXAgent, ϕ_t)
     "Posterior predictive distribution is location-scale t-distributed"
 
-    ν_star = 2*agent.α
-    μ_star = dot(agent.μ, ϕ)
-    σ2_star = agent.β/agent.α*(1 + ϕ'*inv(agent.Λ)*ϕ)
+    ν_t = 2*agent.α
+    m_t = dot(agent.μ, ϕ_t)
+    s2_t = agent.β/agent.α*(1 + ϕ_t'*inv(agent.Λ)*ϕ_t)
 
-    return ν_star, μ_star, σ2_star
+    return ν_t, m_t, s2_t
 end
 
 function predictions(agent::NARXAgent, controls; time_horizon=1)
@@ -133,11 +133,11 @@ function predictions(agent::NARXAgent, controls; time_horizon=1)
         ubuffer = backshift(ubuffer, controls[t])
         ϕ_t = pol([ybuffer; ubuffer], degree=agent.pol_degree)
 
-        ν_t, μ_t, σ2_t = posterior_predictive(agent, ϕ_t)
+        ν_t, m_t, s2_t = posterior_predictive(agent, ϕ_t)
         
         # Prediction
-        m_y[t] = μ_t
-        v_y[t] = σ2_t * ν_t/(ν_t - 2)
+        m_y[t] = m_t
+        v_y[t] = s2_t * ν_t/(ν_t - 2)
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y[t])
@@ -153,8 +153,8 @@ end
 
 function crossentropy(agent::NARXAgent, goal::NormalMeanVariance, m_pred, v_pred)
     "Cross-entropy between posterior predictive and goal prior (constant terms dropped)"  
-    # return ( v_pred + (m_pred - mean(goal))^2)/(2var(goal))
-    return (m_pred - mean(goal))^2/(2var(goal))
+    return ( v_pred + (m_pred - mean(goal))^2 ) / ( 2var(goal) )
+    # return (m_pred - mean(goal))^2/(2var(goal))
 end 
 
 function EFE(agent::NARXAgent, goals, controls)
@@ -171,11 +171,11 @@ function EFE(agent::NARXAgent, goals, controls)
         ϕ_t = pol([ybuffer; ubuffer], degree=agent.pol_degree)
 
         # Prediction
-        ν_t, m_y, σ2_t = posterior_predictive(agent, ϕ_t)
-        v_y = σ2_t * ν_t/(ν_t - 2)
+        ν_t, m_t, s2_t = posterior_predictive(agent, ϕ_t)
+        v_y = s2_t * ν_t/(ν_t - 2)
         
         # Accumulate EFE
-        J += mutualinfo(agent, ϕ_t) + crossentropy(agent, goals[t], m_y,v_y) + agent.λ*controls[t]^2
+        J += mutualinfo(agent, ϕ_t) + crossentropy(agent, goals[t], m_t, v_y) + agent.λ*controls[t]^2
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
@@ -194,10 +194,10 @@ function MSE(agent::NARXAgent, goals, controls)
         
         # Update control buffer
         ubuffer = backshift(ubuffer, controls[t])
-        ϕ_k = pol([ybuffer; ubuffer], degree=agent.pol_degree)
+        ϕ_t = pol([ybuffer; ubuffer], degree=agent.pol_degree)
         
         # Prediction
-        m_y = dot(agent.μ, ϕ_k)
+        m_y = dot(agent.μ, ϕ_t)
         
         # Accumulate objective function
         J += (mean(goals[t]) - m_y)^2 + agent.λ*controls[t]^2
