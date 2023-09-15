@@ -21,8 +21,8 @@ T = 10
 # Basis
 H = 3
 sys_basis(x) = cat([1.0; [x.^d for d in 1:H]]...,dims=1)
-M_in = 2
-M_out = 2
+M_in = 3
+M_out = 3
 M = size(sys_basis(zeros(M_out + 1 + M_in)),1)
 
 # Control parameters
@@ -33,23 +33,20 @@ input_lims = (-1.,1.)
 β0 = 1.0
 μ0 = zeros(M)
 Λ0 = diagm(ones(M))
-goal = NormalMeanVariance(1.0, 1.0)
+goal = Normal(1.0, 1.0)
 
-# Randomized variables
-pσ = Gamma(2.0, 1/50.)
-pf = Uniform(0.5, 2.0)
+ppp = Progress(num_exps)
+for nn in 1:num_exps
 
-@showprogress for nn in 1:num_exps
+    # Load system parameters
+    sys_settings = load("./experiments/data/system-$nn.jld")
+    sys_mnoise_sd = sys_settings["sys_sd"]
+    sys_coefficients = sys_settings["sys_theta"]
 
-    # Define system parameters
-    sys_mnoise_sd = rand(pσ);
-    df = digitalfilter(Lowpass(rand(pf); fs=fs), Butterworth(maximum([M_in, M_out])))
-    sys_coefficients = [0.0; sys_basis([coefb(df)[2:M_out+1]; coefa(df)[1:M_in+1]])[2:end]]
-
-    # Inputs
+    # Random controls
     controls = clamp!(2randn(N).-1, input_lims...)
 
-    # Outputs
+    # Start system
     system = NARXsys(sys_coefficients, 
                     sys_basis, 
                     sys_mnoise_sd, 
@@ -95,6 +92,9 @@ pf = Uniform(0.5, 2.0)
         FE[k] = agent.free_energy
     end
 
-    @save "results/learningrate-rnd-$nn.jl" py, μ, Λ, α, β, FE, α0, β0, μ0, Λ0, goal, pσ, pf, input_lims, T
+    save("./experiments/results/learningrate-rnd-$nn.jld", "py", py, "mu", μ, "Lambda", Λ, "alpha", α, "beta", β, 
+        "FE", FE, "alpha0", α0, "beta0", β0, "mu0", μ0, "Lambda0", Λ0, "goal", goal,  "u_lims", input_lims, "thorizon", T)
 
+    next!(ppp)
 end
+finish!(ppp)

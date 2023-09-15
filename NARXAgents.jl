@@ -1,7 +1,6 @@
 module NARXAgents
 
 using Optim
-using RxInfer
 using Distributions
 using SpecialFunctions
 using LinearAlgebra
@@ -29,7 +28,7 @@ mutable struct NARXAgent
     β               ::Float64           # Likelihood precision rate
     λ               ::Float64           # Control prior precision
 
-    goals           ::Union{NormalDistributionsFamily, Vector}
+    goals           ::Union{Distribution{Univariate, Continuous}, Vector}
     thorizon        ::Integer
     num_iters       ::Integer
 
@@ -39,7 +38,7 @@ mutable struct NARXAgent
                        coefficients_precision,
                        noise_shape,
                        noise_rate; 
-                       goal_prior=NormalMeanVariance(0.0, 1.0),
+                       goal_prior=Normal(0.0, 1.0),
                        delay_inp::Integer=1, 
                        delay_out::Integer=1, 
                        pol_degree::Integer=1,
@@ -151,7 +150,7 @@ function mutualinfo(agent::NARXAgent, ϕ)
     return -1/2*log( agent.β/agent.α*(1 + ϕ'*inv(agent.Λ)*ϕ) )
 end
 
-function crossentropy(agent::NARXAgent, goal::NormalMeanVariance, m_pred, v_pred)
+function crossentropy(agent::NARXAgent, goal::Distribution{Univariate, Continuous}, m_pred, v_pred)
     "Cross-entropy between posterior predictive and goal prior (constant terms dropped)"  
     return ( v_pred + (m_pred - mean(goal))^2 ) / ( 2var(goal) )
     # return (m_pred - mean(goal))^2/(2var(goal))
@@ -172,10 +171,12 @@ function EFE(agent::NARXAgent, goals, controls)
 
         # Prediction
         ν_t, m_t, s2_t = posterior_predictive(agent, ϕ_t)
+        
+        m_y = m_t
         v_y = s2_t * ν_t/(ν_t - 2)
         
         # Accumulate EFE
-        J += mutualinfo(agent, ϕ_t) + crossentropy(agent, goals[t], m_t, v_y) + agent.λ*controls[t]^2
+        J += mutualinfo(agent, ϕ_t) + crossentropy(agent, goals[t], m_y, v_y) + agent.λ*controls[t]^2
         
         # Update previous 
         ybuffer = backshift(ybuffer, m_y)        
@@ -262,7 +263,7 @@ function backshift(x::AbstractVector, a::Number)
     return S*x + e*a
 end
 
-function update_goals!(x::AbstractVector, g::NormalMeanVariance)
+function update_goals!(x::AbstractVector, g::Distribution{Univariate, Continuous})
     "Move goals forward and add a final goal"
     circshift!(x,-1)
     x[end] = g
