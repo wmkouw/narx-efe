@@ -59,7 +59,7 @@ mutable struct NARXAgent
         return new(ybuffer,
                    ubuffer,
                    delay_inp,
-                   delay_out,
+                   delay_out,   
                    pol_degree,
                    order,
                    coefficients_mean,

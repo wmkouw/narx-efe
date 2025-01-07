@@ -36,3 +36,15 @@ function lowpass(x::Vector; order=1, Wn=1.0, fs=1.0)
 
     return filt(b,a, x), a,b
 end
+
+function polar2cart(θ::Float64, r::Float64)
+    x =  sin(θ)
+    y = -cos(θ)
+    return r*[x,y]
+end
+
+function cart2polar(x::Float64, y::Float64)
+    r = sqrt(x^2 + y^2)
+    θ = atan(-y, x)  # Use atan2 to get the angle in the correct quadrant
+    return (θ, r)
+end

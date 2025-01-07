@@ -7,7 +7,7 @@ default(label="", margin=20Plots.pt)
 
 includet("../mv_normal_gamma.jl"); using .mv_normal_gamma
 
-num_exps = 100
+num_exps = 10
 N = 100
 
 id_rnd = zeros(num_exps, N)
