@@ -149,7 +149,10 @@ end
 
 function mutualinfo(agent::MARXAgent, x)
     "Mutual information between parameters and posterior predictive (constant terms dropped)"
-    return -1/2*logdet(agent.Ω/(agent.ν-agent.Dy+1)*(x'*inv(agent.Λ)*x + 1))
+
+    _, _, Ψ = posterior_predictive(agent, x)
+
+    return 1/2*logdet(Ψ)
 end
 
 function crossentropy(agent::MARXAgent, x)
@@ -159,7 +162,7 @@ function crossentropy(agent::MARXAgent, x)
     S_star = cov(agent.goal_prior)
     η_t, μ_t, Ψ_t = posterior_predictive(agent, x)
 
-    return 1/2*( agent.Dy*log(2π) + logdet(S_star) + η_t/(η_t-2)*tr(inv(S_star)*inv(Ψ_t)) + (μ_t-m_star)'*inv(S_star)*(μ_t-m_star) ) 
+    return 1/2*( η_t/(η_t-2)*tr(inv(S_star)*inv(Ψ_t)) + (μ_t-m_star)'*inv(S_star)*(μ_t-m_star) ) 
 end 
 
 function EFE(agent::MARXAgent, controls)
