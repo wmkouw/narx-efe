@@ -268,3 +268,5 @@ function prod!(x::NormalDistributionsFamily, y::NormalDistributionsFamily)
 
     return qmz,qvz
 end
+
+end

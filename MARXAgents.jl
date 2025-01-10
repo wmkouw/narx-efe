@@ -163,7 +163,6 @@ function crossentropy(agent::MARXAgent, x)
     η_t, μ_t, Ψ_t = posterior_predictive(agent, x)
 
     return 1/2*( η_t/(η_t-2)*tr(inv(S_star)*inv(Ψ_t)) + (μ_t-m_star)'*inv(S_star)*(μ_t-m_star) ) 
-    # return 1/2*(μ_t-m_star)'*inv(S_star)*(μ_t-m_star)
 end 
 
 function EFE(agent::MARXAgent, controls)
@@ -184,7 +183,6 @@ function EFE(agent::MARXAgent, controls)
 
         # Calculate and accumulate EFE
         J += mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
-        # J += crossentropy(agent, x_t)
         
         # Update previous 
         _, m_y, _ = posterior_predictive(agent, x_t)
