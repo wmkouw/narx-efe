@@ -26,5 +26,6 @@ Manifest.toml
 # Local
 .ipynb_checkpoints
 .vscode
+*.mp4
 archive/
 literature/

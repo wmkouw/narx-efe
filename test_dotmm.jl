@@ -39,7 +39,7 @@ zr = range(-5,stop=5, length=100)
 histogram(z, bins=zr, normalize=:pdf, xlims=extrema(zr))
 
 # Bessel function
-pz(z) = besselk.(0, abs(z))./(3π/2)
+pz(z) = besselk.(0, abs(z))./π
 plot!(zr, pz.(zr), lw=3, color="red", xlims=extrema(zr))
 
 # Gaussian with moment matching (EP)
