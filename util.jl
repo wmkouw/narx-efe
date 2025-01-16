@@ -48,3 +48,23 @@ function cart2polar(x::Float64, y::Float64)
     θ = atan(-y, x)  # Use atan2 to get the angle in the correct quadrant
     return (θ, r)
 end
+
+function trackbot(tk)
+
+    xl = extrema(y_sim[1,:])
+    yl = extrema(y_sim[2,:])
+    ttime = round(tk*Δt, digits=1)
+    plot(title="time = $ttime sec", xlims=xl, ylims=yl)
+
+    scatter!([z_0[1]], [z_0[2]], label="start", color="green", markersize=5)
+    scatter!([mean(goal)[1]], [mean(goal)[2]], label="goal", color="red", markersize=5)
+    covellipse!(mean(goal), cov(goal), n_std=1., linewidth=3, fillalpha=0.01, linecolor="red", color="red")
+    scatter!([y_sim[1,tk]], [y_sim[2,tk]], alpha=0.3, label="observations", color="black")
+    plot!([z_sim[1,tk]], [z_sim[2,tk]], marker=:star5, markersize=5, label="system path", color="blue")
+   
+    for kk = 1:len_horizon
+        covellipse!(y_pln[1][tk,:,kk], y_pln[2][tk,:,:,kk]/100, linewidth=0, n_std=1, fillalpha=0.1, color="orange")
+    end
+    plot!(y_pln[1][tk,1,:], y_pln[1][tk,2,:], color="orange", label="planning")
+
+end

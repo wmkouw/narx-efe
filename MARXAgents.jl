@@ -152,7 +152,7 @@ function mutualinfo(agent::MARXAgent, x)
 
     _, _, Ψ = posterior_predictive(agent, x)
 
-    return 1/2*logdet(Ψ)
+    return logdet(Ψ)
 end
 
 function crossentropy(agent::MARXAgent, x)
