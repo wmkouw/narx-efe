@@ -165,6 +165,14 @@ function crossentropy(agent::MARXAgent, x)
     return 1/2*( η_t/(η_t-2)*tr(inv(S_star)*inv(Ψ_t)) + (μ_t-m_star)'*inv(S_star)*(μ_t-m_star) ) 
 end 
 
+function sampleW(agent; num_samples=1)
+    "Return samples from a Wishart distribution"
+
+    W = rand(Wishart(agent.ν, inv(agent.Ω)), num_samples)
+    A = [rand(MatrixNormal(agent.M, inv(agent.Λ), inv(Wi))) for Wi in W]
+    return [(Ai,Wi) for (Ai,Wi) in zip(A,W)]
+end
+
 function EFE(agent::MARXAgent, controls)
     "Expected Free Energy"
 
