@@ -173,29 +173,90 @@ function sampleW(agent; num_samples=1)
     return [(Ai,Wi) for (Ai,Wi) in zip(A,W)]
 end
 
+# force matrices to be Hermitian (ishermitian) by forcing numerical symmetry and adding a regularization term
+function sampleAW(agent; num_samples=1)
+    Ω_inv = (inv(agent.Ω) + inv(agent.Ω)') / 2 + 1e-6 * I
+    W = rand(Wishart(agent.ν, Ω_inv), num_samples)
+    Λ_inv = (inv(agent.Λ) + inv(agent.Λ)') / 2 + 1e-6 * I
+    A = [rand(MatrixNormal(agent.M, Λ_inv, inv(Wi))) for Wi in W]
+    return [(Ai,Wi) for (Ai,Wi) in zip(A,W)]
+end
+
 function EFE(agent::MARXAgent, controls)
     "Expected Free Energy"
+    #println(typeof(controls))
+    #println(size(controls))
+    #println(typeof(controls[1]))
+    #println(controls[1])
+    #println(size(controls[1]))
+    #println("controls: $controls")
 
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
     
-    J = 0
-    for t in 1:agent.thorizon
 
-        # Current control
-        u_t = controls[(t-1)*agent.Du+1:t*agent.Du]
-        
-        # Update control buffer
-        ubuffer = backshift(ubuffer, u_t)
+
+    # sampling of a joint over the future predictions for time horizon of 2
+    # go over all samples
+    N = 10
+    AW = sampleAW(agent, num_samples=N)
+    # TODO thorizon times D_y
+    # TODO generalize to thorizon > 2
+    # TODO running average instead of saving into μs and Σs
+    μs = zeros(2*agent.Dy, N)
+    Σs = zeros(2*agent.Dy, 2*agent.Dy, N)
+    for i in 1:N
+        A, W = AW[i]
+        mvn_mean = zeros(2*agent.Dy)
+        mvn_cov = zeros(2*agent.Dy, 2*agent.Dy)
+
+        # Assuming y buffer is being put at the end of the buffer, then the block of A corresponding to the future output are thorizon-1 last rows
+        A2 = A[end-1:end,:]
+        mvn_cov = [inv(W) inv(W)*A2'; A2*inv(W) A2*inv(W)*A2' + inv(W)]
+
+        # x_t = x_{k+1} contains u_{k+1} and y_k
+        #u_t = controls[(t-1)*agent.Du+1:t*agent.Du]
+        #u_t = controls[1:2]
+        ubuffer = backshift(ubuffer, controls[1:2])
         x_t = [ubuffer[:]; ybuffer[:]]
+        py_t = A'x_t
+        mvn_mean[1:2] = py_t
 
-        # Calculate and accumulate EFE
-        J += mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
-        
-        # Update previous 
-        _, m_y, _ = posterior_predictive(agent, x_t)
-        ybuffer = backshift(ybuffer, m_y)        
+        yp1buffer = backshift(ybuffer, py_t)
+        up1buffer = backshift(ubuffer, controls[3:4])
+        x_tp1 = [ubuffer[:]; ybuffer[:]]
+        mvn_mean[3:4] = A'x_tp1
+
+        yi = MvNormal(mvn_mean, mvn_cov)
+        μs[:,i], Σs[:,:,i] = mean(yi), cov(yi)
     end
+
+    # expectation of outputs via sampling of N samples
+    μ = μs[:,i] ./ N
+    Σ = Σs[:,i] ./ N
+    pys = MvNormal(μ, Σ)
+
+    # TODO use pys as joint posterior predictive for EFE
+    J = 0
+    if false
+        for t in 1:agent.thorizon
+    
+            # Current control
+            u_t = controls[(t-1)*agent.Du+1:t*agent.Du]
+            
+            # Update control buffer
+            ubuffer = backshift(ubuffer, u_t)
+            x_t = [ubuffer[:]; ybuffer[:]]
+    
+            # Calculate and accumulate EFE
+            J += mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
+            
+            # Update previous 
+            _, m_y, _ = posterior_predictive(agent, x_t)
+            ybuffer = backshift(ybuffer, m_y)        
+        end
+    end
+    J += mutualinfo(agent, x_t) + crossentropy(agent, x_t)
     return J
 end
 
