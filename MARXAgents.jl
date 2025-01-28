@@ -191,16 +191,10 @@ function sampleAW(agent; n_samples=1)
     return [(Ai,Wi) for (Ai,Wi) in zip(A,W)]
 end
 
-function EFE(agent::MARXAgent, controls::AbstractVector{T}) where T
-#function EFE(agent::MARXAgent, controls)
-    "Expected Free Energy"
-    N = 10
-    r = 1e-6
-
-    ybuffer = agent.ybuffer
-    ubuffer = agent.ubuffer
-
-    println("[ ] Sampling")
+function sampled_posterior_predictive_future(agent::MARXAgent, controls::AbstractVector{T}; N::Int=10, r::Float64=1e-6) where T
+    ybuffer = deepcopy(agent.ybuffer)
+    ubuffer = deepcopy(agent.ubuffer)
+    #println("[ ] Sampling")
     # sampling of a joint over the future predictions for time horizon of 2
     AW = sampleAW(agent, n_samples=N)
     # TODO thorizon times D_y
@@ -224,10 +218,10 @@ function EFE(agent::MARXAgent, controls::AbstractVector{T}) where T
         ubuffer = backshift(ubuffer, controls[1:2])
         x_t = [ubuffer[:]; ybuffer[:]]
         py_t = A'x_t
-        println("type(x_t)")
-        for (xi, x) in enumerate(x_t)
-            println(xi, " ", x)
-        end
+        #println("type(x_t)")
+        #for (xi, x) in enumerate(x_t)
+        #    println(xi, " ", x)
+        #end
 
         yp1buffer = backshift(ybuffer, py_t)
         up1buffer = backshift(ubuffer, controls[3:4])
@@ -239,15 +233,25 @@ function EFE(agent::MARXAgent, controls::AbstractVector{T}) where T
         μ += (μi - μ)./i
         Σ += (Σi - Σ)./i
     end
-    println("[X] Sampling")
+    #println("[X] Sampling")
 
     # TODO: forgot to sum
     # expectation of outputs via sampling of N samples
     #μ = μs[:,i] ./ N
     #Σ = Σs[:,i] ./ N
     pys = MvNormal(μ, Σ)
-    println(pys)
+    return pys
+end
 
+function EFE(agent::MARXAgent, controls::AbstractVector{T}; N::Int=10) where T
+#function EFE(agent::MARXAgent, controls)
+    "Expected Free Energy"
+
+
+    pys = sampled_posterior_predictive_future(agent, controls, N=N)
+
+    ybuffer = agent.ybuffer
+    ubuffer = agent.ubuffer
     # TODO use pys as joint posterior predictive for EFE
     J = rand(1)[1]
     if false
