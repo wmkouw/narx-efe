@@ -4,6 +4,7 @@ using Optim
 using Distributions
 using SpecialFunctions
 using LinearAlgebra
+using ForwardDiff
 
 export MARXAgent, update!, predictions, posterior_predictive, EFE, crossentropy, mutualinfo, minimizeEFE, update_goals!
 
@@ -174,37 +175,38 @@ function sampleW(agent; num_samples=1)
 end
 
 # force matrices to be Hermitian (ishermitian) by forcing numerical symmetry and adding a regularization term
-function sampleAW(agent; num_samples=1)
-    Ω_inv = (inv(agent.Ω) + inv(agent.Ω)') / 2 + 1e-6 * I
-    W = rand(Wishart(agent.ν, Ω_inv), num_samples)
-    Λ_inv = (inv(agent.Λ) + inv(agent.Λ)') / 2 + 1e-6 * I
-    A = [rand(MatrixNormal(agent.M, Λ_inv, inv(Wi))) for Wi in W]
+function sampleAW(agent; n_samples=1)
+    r = 1e-6
+    Ω_inv = (inv(agent.Ω) + inv(agent.Ω)') / 2 + r*I
+    Λ_inv = (inv(agent.Λ) + inv(agent.Λ)') / 2 + r*I
+    A = zeros(agent.Dx, agent.Dy, n_samples)
+    W = rand(Wishart(agent.ν, Ω_inv), n_samples)
+    for (i, Wi) in enumerate(W)
+        Wi_inv = (inv(Wi) + inv(Wi)') / 2 + r*I
+        A[:,:,i] = rand(MatrixNormal(agent.M, Λ_inv, Wi_inv))
+    end
+    A = [Matrix(slice) for slice in eachslice(A, dims=3)]
+    # symmetrize and regularize W again...
+    #W = (W + W') / 2 + r*I
     return [(Ai,Wi) for (Ai,Wi) in zip(A,W)]
 end
 
-function EFE(agent::MARXAgent, controls)
+function EFE(agent::MARXAgent, controls::AbstractVector{T}) where T
+#function EFE(agent::MARXAgent, controls)
     "Expected Free Energy"
-    #println(typeof(controls))
-    #println(size(controls))
-    #println(typeof(controls[1]))
-    #println(controls[1])
-    #println(size(controls[1]))
-    #println("controls: $controls")
+    N = 10
+    r = 1e-6
 
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
-    
 
-
+    println("[ ] Sampling")
     # sampling of a joint over the future predictions for time horizon of 2
-    # go over all samples
-    N = 10
-    AW = sampleAW(agent, num_samples=N)
+    AW = sampleAW(agent, n_samples=N)
     # TODO thorizon times D_y
     # TODO generalize to thorizon > 2
-    # TODO running average instead of saving into μs and Σs
-    μs = zeros(2*agent.Dy, N)
-    Σs = zeros(2*agent.Dy, 2*agent.Dy, N)
+    μ = zeros(2*agent.Dy)
+    Σ = zeros(2*agent.Dy, 2*agent.Dy)
     for i in 1:N
         A, W = AW[i]
         mvn_mean = zeros(2*agent.Dy)
@@ -212,7 +214,9 @@ function EFE(agent::MARXAgent, controls)
 
         # Assuming y buffer is being put at the end of the buffer, then the block of A corresponding to the future output are thorizon-1 last rows
         A2 = A[end-1:end,:]
-        mvn_cov = [inv(W) inv(W)*A2'; A2*inv(W) A2*inv(W)*A2' + inv(W)]
+        W_inv = (inv(W) + inv(W)') / 2 + r*I
+        Σi = [W_inv W_inv*A2'; A2*W_inv A2*W_inv*A2' + W_inv]
+        Σi = (Σi + Σi') / 2 + r*I
 
         # x_t = x_{k+1} contains u_{k+1} and y_k
         #u_t = controls[(t-1)*agent.Du+1:t*agent.Du]
@@ -220,24 +224,32 @@ function EFE(agent::MARXAgent, controls)
         ubuffer = backshift(ubuffer, controls[1:2])
         x_t = [ubuffer[:]; ybuffer[:]]
         py_t = A'x_t
-        mvn_mean[1:2] = py_t
+        println("type(x_t)")
+        for (xi, x) in enumerate(x_t)
+            println(xi, " ", x)
+        end
 
         yp1buffer = backshift(ybuffer, py_t)
         up1buffer = backshift(ubuffer, controls[3:4])
         x_tp1 = [ubuffer[:]; ybuffer[:]]
-        mvn_mean[3:4] = A'x_tp1
 
-        yi = MvNormal(mvn_mean, mvn_cov)
-        μs[:,i], Σs[:,:,i] = mean(yi), cov(yi)
+        μi = [py_t; A'x_tp1]
+
+        # moving average
+        μ += (μi - μ)./i
+        Σ += (Σi - Σ)./i
     end
+    println("[X] Sampling")
 
+    # TODO: forgot to sum
     # expectation of outputs via sampling of N samples
-    μ = μs[:,i] ./ N
-    Σ = Σs[:,i] ./ N
+    #μ = μs[:,i] ./ N
+    #Σ = Σs[:,i] ./ N
     pys = MvNormal(μ, Σ)
+    println(pys)
 
     # TODO use pys as joint posterior predictive for EFE
-    J = 0
+    J = rand(1)[1]
     if false
         for t in 1:agent.thorizon
     
@@ -255,8 +267,8 @@ function EFE(agent::MARXAgent, controls)
             _, m_y, _ = posterior_predictive(agent, x_t)
             ybuffer = backshift(ybuffer, m_y)        
         end
-    end
     J += mutualinfo(agent, x_t) + crossentropy(agent, x_t)
+    end
     return J
 end
 
