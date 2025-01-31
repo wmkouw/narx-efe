@@ -68,3 +68,34 @@ function trackbot(tk)
     plot!(y_pln[1][tk,1,:], y_pln[1][tk,2,:], color="orange", label="planning")
 
 end
+
+function sqrtm(M::AbstractMatrix)
+    "Square root of matrix"
+
+    if size(M) == (2,2)
+        "https://en.wikipedia.org/wiki/Square_root_of_a_2_by_2_matrix"
+
+        A,C,B,D = M
+
+        # Determinant
+        δ = A*D - B*C
+        s = sqrt(δ)
+
+        # Trace
+        τ = A+D
+        t = sqrt(τ + 2s)
+
+        return 1/t*(M+s*Matrix{eltype(M)}(I,2,2))
+    else
+        "Babylonian method"
+
+        Xk = Matrix{eltype(M)}(I,size(M))
+        Xm = zeros(eltype(M), size(M))
+
+        while sum(abs.(Xk[:] .- Xm[:])) > 1e-3
+            Xm = Xk
+            Xk = (Xm + M/Xm)/2.0
+        end
+        return Xk
+    end
+end
