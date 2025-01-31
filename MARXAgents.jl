@@ -173,29 +173,31 @@ function sampleAW(agent; num_samples=1)
     return [(Ai,Wi) for (Ai,Wi) in zip(A,W)]
 end
 
-function sample_postpred(agent::MARXAgent, x; num_samples=1)
+function sample_postpred(agent::MARXAgent, x_t; num_samples=1)
     "Sample from location-scale T posterior predictive distribution"
 
-    η, μ, Ψ = posterior_predictive(agent, x)    
+    η, μ, Ψ = posterior_predictive(agent, x_t)    
     
-    yy = rand(MvNormal(zeros(agent.Dy), inv(Ψ)), num_samples)
+    # yy = sqrtm(inv(Ψ))*rand(MvNormal(zeros(agent.Dy), diagm(ones(agent.Dy))), num_samples)
+    yy = rand(MvNormal(zeros(agent.Dy), inv(Hermitian(Ψ))), num_samples)
     uu = rand(Chisq(η), num_samples)
 
     return cat([yy[:,i]*sqrt(η/uu[i]) + μ for i in 1:num_samples]..., dims=2)
 end
 
-function EFE_sampling(agent::MARXAgent, controls; num_samples=100)
+function EFE_sampling(agent::MARXAgent, controls, num_samples)
     "Expected Free Energy"
 
+    samples = zeros(Real, agent.Dy, num_samples, agent.thorizon)
+    ybuffer = zeros(Real, agent.Dy, agent.delay_out, agent.thorizon, num_samples)
+    ybuffer[:,:,1,1] = agent.ybuffer
     ubuffer = agent.ubuffer
-    ybuffer = repeat(agent.ybuffer, 1,1,num_samples)
-    samples = zeros(agent.Dy, num_samples, agent.thorizon)
 
     "t = k+1"
     
     u_t = controls[1:agent.Du]
     ubuffer = backshift(ubuffer, u_t)
-    x_t = [ubuffer[:]; ybuffer[:,:,1][:]]
+    x_t = [ubuffer[:]; ybuffer[:,:,1,1][:]]
 
     J = mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
 
@@ -211,8 +213,8 @@ function EFE_sampling(agent::MARXAgent, controls; num_samples=100)
         Jt = 0
         for nn in 1:num_samples
 
-            ybuffer[:,:,nn] = backshift(ybuffer[:,:,nn], samples[:,nn,t-1])        
-            x_t = [ubuffer[:]; ybuffer[:,:,nn][:]]
+            ybuffer[:,:,2,nn] = backshift(ybuffer[:,:,1,nn], samples[:,nn,t-1])        
+            x_t = [ubuffer[:]; ybuffer[:,:,2,nn][:]]
 
             # Calculate and accumulate EFE
             Jt += mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
@@ -220,8 +222,7 @@ function EFE_sampling(agent::MARXAgent, controls; num_samples=100)
             # Sample based on current particle
             samples[:,nn,t] = sample_postpred(agent, x_t, num_samples=1)
         end
-
-        J += mean(Jt)
+        J += Jt/num_samples
         
     end
     return J
@@ -312,6 +313,37 @@ function logmultigamma(p,a)
         result += loggamma(a + (1-j)/2)
     end
     return result
+end
+
+function sqrtm(M::AbstractMatrix)
+    "Square root of matrix"
+
+    if size(M) == (2,2)
+        "https://en.wikipedia.org/wiki/Square_root_of_a_2_by_2_matrix"
+
+        A,C,B,D = M
+
+        # Determinant
+        δ = A*D - B*C
+        s = sqrt(δ)
+
+        # Trace
+        τ = A+D
+        t = sqrt(τ + 2s)
+
+        return 1/t*(M+s*Matrix{eltype(M)}(I,2,2))
+    else
+        "Babylonian method"
+
+        Xk = Matrix{eltype(M)}(I,size(M))
+        Xm = zeros(eltype(M), size(M))
+
+        while sum(abs.(Xk[:] .- Xm[:])) > 1e-3
+            Xm = Xk
+            Xk = (Xm + M/Xm)/2.0
+        end
+        return Xk
+    end
 end
 
 end
