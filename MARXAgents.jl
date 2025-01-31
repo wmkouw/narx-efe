@@ -5,7 +5,7 @@ using Distributions
 using SpecialFunctions
 using LinearAlgebra
 
-export MARXAgent, update!, predictions, posterior_predictive, EFE, crossentropy, mutualinfo, minimizeEFE, update_goals!
+export MARXAgent, update!, predictions, posterior_predictive, EFE_collapsed, EFE_sampling, crossentropy, mutualinfo, minimizeEFE, update_goals!
 
 
 mutable struct MARXAgent
@@ -165,7 +165,7 @@ function crossentropy(agent::MARXAgent, x)
     return 1/2*( η_t/(η_t-2)*tr(inv(S_star)*inv(Ψ_t)) + (μ_t-m_star)'*inv(S_star)*(μ_t-m_star) ) 
 end 
 
-function sampleW(agent; num_samples=1)
+function sampleAW(agent; num_samples=1)
     "Return samples from a Wishart distribution"
 
     W = rand(Wishart(agent.ν, inv(agent.Ω)), num_samples)
@@ -173,7 +173,61 @@ function sampleW(agent; num_samples=1)
     return [(Ai,Wi) for (Ai,Wi) in zip(A,W)]
 end
 
-function EFE(agent::MARXAgent, controls)
+function sample_postpred(agent::MARXAgent, x; num_samples=1)
+    "Sample from location-scale T posterior predictive distribution"
+
+    η, μ, Ψ = posterior_predictive(agent, x)    
+    
+    yy = rand(MvNormal(zeros(agent.Dy), inv(Ψ)), num_samples)
+    uu = rand(Chisq(η), num_samples)
+
+    return cat([yy[:,i]*sqrt(η/uu[i]) + μ for i in 1:num_samples]..., dims=2)
+end
+
+function EFE_sampling(agent::MARXAgent, controls; num_samples=100)
+    "Expected Free Energy"
+
+    ubuffer = agent.ubuffer
+    ybuffer = repeat(agent.ybuffer, 1,1,num_samples)
+    samples = zeros(agent.Dy, num_samples, agent.thorizon)
+
+    "t = k+1"
+    
+    u_t = controls[1:agent.Du]
+    ubuffer = backshift(ubuffer, u_t)
+    x_t = [ubuffer[:]; ybuffer[:,:,1][:]]
+
+    J = mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
+
+    # Sample from posterior predictive
+    samples[:,:,1] = sample_postpred(agent, x_t, num_samples=num_samples)
+
+    for t in 2:agent.thorizon
+
+        # Update controls
+        u_t = controls[(t-1)*agent.Du+1:t*agent.Du]
+        ubuffer = backshift(ubuffer, u_t)
+
+        Jt = 0
+        for nn in 1:num_samples
+
+            ybuffer[:,:,nn] = backshift(ybuffer[:,:,nn], samples[:,nn,t-1])        
+            x_t = [ubuffer[:]; ybuffer[:,:,nn][:]]
+
+            # Calculate and accumulate EFE
+            Jt += mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
+
+            # Sample based on current particle
+            samples[:,nn,t] = sample_postpred(agent, x_t, num_samples=1)
+        end
+
+        J += mean(Jt)
+        
+    end
+    return J
+end
+
+function EFE_collapsed(agent::MARXAgent, controls)
     "Expected Free Energy"
 
     ybuffer = agent.ybuffer
