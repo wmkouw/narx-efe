@@ -147,83 +147,59 @@ function predictions(agent::MARXAgent, controls; time_horizon=1)
     return m_y, S_y
 end
 
-function mutualinfo(agent::MARXAgent, x)
+function mutualinfo(agent::MARXAgent, postpred_params)
     "Mutual information between parameters and posterior predictive (constant terms dropped)"
 
-    _, _, Ψ = posterior_predictive(agent, x)
+    _, _, Ψ = postpred_params
 
     return logdet(Ψ)
 end
 
-function crossentropy(agent::MARXAgent, x)
+function crossentropy(agent::MARXAgent, postpred_params)
     "Cross-entropy between posterior predictive and goal prior (constant terms dropped)"  
 
     m_star = mean(agent.goal_prior)
     S_star = cov(agent.goal_prior)
-    η_t, μ_t, Ψ_t = posterior_predictive(agent, x)
+    η_t, μ_t, Ψ_t = postpred_params
 
     return 1/2*( η_t/(η_t-2)*tr(inv(S_star)*inv(Ψ_t)) + (μ_t-m_star)'*inv(S_star)*(μ_t-m_star) ) 
 end 
 
-function sampleAW(agent; num_samples=1)
-    "Return samples from a Wishart distribution"
-
-    W = rand(Wishart(agent.ν, inv(agent.Ω)), num_samples)
-    A = [rand(MatrixNormal(agent.M, inv(agent.Λ), inv(Wi))) for Wi in W]
-    return [(Ai,Wi) for (Ai,Wi) in zip(A,W)]
-end
-
-function sample_postpred(agent::MARXAgent, x_t; num_samples=1)
-    "Sample from location-scale T posterior predictive distribution"
-
-    η, μ, Ψ = posterior_predictive(agent, x_t)    
-    
-    # yy = sqrtm(inv(Ψ))*rand(MvNormal(zeros(agent.Dy), diagm(ones(agent.Dy))), num_samples)
-    yy = rand(MvNormal(zeros(agent.Dy), inv(Hermitian(Ψ))), num_samples)
-    uu = rand(Chisq(η), num_samples)
-
-    return cat([yy[:,i]*sqrt(η/uu[i]) + μ for i in 1:num_samples]..., dims=2)
-end
-
-function EFE_sampling(agent::MARXAgent, controls, num_samples)
+function EFE_sigmapoint(agent::MARXAgent, controls)
     "Expected Free Energy"
 
-    samples = zeros(Real, agent.Dy, num_samples, agent.thorizon)
-    ybuffer = zeros(Real, agent.Dy, agent.delay_out, agent.thorizon, num_samples)
-    ybuffer[:,:,1,1] = agent.ybuffer
-    ubuffer = agent.ubuffer
+    ppred_buffer = []
 
-    "t = k+1"
-    
-    u_t = controls[1:agent.Du]
+    # Current control
+    u_t = controls[(t-1)*agent.Du+1:t*agent.Du]
+        
+    # Update control buffer
     ubuffer = backshift(ubuffer, u_t)
-    x_t = [ubuffer[:]; ybuffer[:,:,1,1][:]]
+    x_t = [ubuffer[:]; ybuffer[:]]
 
+    η_t, μ_t, Ψ_t = posterior_predictive(agent, x_t)
+    push!(ppred_buffer, (η_t, μ_t, Ψ_t))
+
+    # Calculate EFE
     J = mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
-
-    # Sample from posterior predictive
-    samples[:,:,1] = sample_postpred(agent, x_t, num_samples=num_samples)
-
+    
     for t in 2:agent.thorizon
 
-        # Update controls
+        # Current control
         u_t = controls[(t-1)*agent.Du+1:t*agent.Du]
-        ubuffer = backshift(ubuffer, u_t)
-
-        Jt = 0
-        for nn in 1:num_samples
-
-            ybuffer[:,:,2,nn] = backshift(ybuffer[:,:,1,nn], samples[:,nn,t-1])        
-            x_t = [ubuffer[:]; ybuffer[:,:,2,nn][:]]
-
-            # Calculate and accumulate EFE
-            Jt += mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
-
-            # Sample based on current particle
-            samples[:,nn,t] = sample_postpred(agent, x_t, num_samples=1)
-        end
-        J += Jt/num_samples
         
+        # Update control buffer
+        ubuffer = backshift(ubuffer, u_t)
+        x_t = [ubuffer[:]; ybuffer[:]]
+
+        _, m_y, _ = posterior_predictive(agent, x_t)
+
+        # Calculate and accumulate EFE
+        J += mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
+        
+        # Update previous 
+        _, m_y, _ = posterior_predictive(agent, x_t)
+        ybuffer = backshift(ybuffer, m_y)        
     end
     return J
 end
@@ -233,7 +209,7 @@ function EFE_collapsed(agent::MARXAgent, controls)
 
     ybuffer = agent.ybuffer
     ubuffer = agent.ubuffer
-    
+
     J = 0
     for t in 1:agent.thorizon
 
@@ -244,12 +220,14 @@ function EFE_collapsed(agent::MARXAgent, controls)
         ubuffer = backshift(ubuffer, u_t)
         x_t = [ubuffer[:]; ybuffer[:]]
 
+        # Calculate posterior predictive
+        η_t, μ_t, Ψ_t = posterior_predictive(agent, x_t)
+
         # Calculate and accumulate EFE
-        J += mutualinfo(agent, x_t) + crossentropy(agent, x_t) # + u_t'*agent.Υ*u_t
+        J += mutualinfo(agent, (η_t, μ_t, Ψ_t)) + crossentropy(agent, (η_t, μ_t, Ψ_t)) # + u_t'*agent.Υ*u_t
         
         # Update previous 
-        _, m_y, _ = posterior_predictive(agent, x_t)
-        ybuffer = backshift(ybuffer, m_y)        
+        ybuffer = backshift(ybuffer, μ_t)        
     end
     return J
 end
